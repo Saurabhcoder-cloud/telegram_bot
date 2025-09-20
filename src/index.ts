@@ -123,16 +123,38 @@ function getLanguage(session?: SessionData): LanguageCode {
   return session?.language ?? DEFAULT_LANGUAGE;
 }
 
-async function sendLanguageMenu(chatId: number, language: LanguageCode) {
+export function buildLanguageKeyboard(selectedCode?: string): InlineKeyboardButton[][] {
+  const rows: InlineKeyboardButton[][] = [];
+  LANGUAGES.forEach((lang) => {
+    const isSelected = selectedCode === lang.code;
+    const button: InlineKeyboardButton = {
+      text: isSelected ? `${lang.label} ✅` : lang.label,
+      callback_data: `${callbackPrefixes.language}:${lang.code}`,
+    };
+    const lastRow = rows[rows.length - 1];
+    if (!lastRow || lastRow.length === 2) {
+      rows.push([button]);
+    } else {
+      lastRow.push(button);
+    }
+  });
+  return rows;
+}
+
+async function showLanguagePicker(chatId: number, selectedCode?: string, messageId?: number) {
+  const session = sessionStore.get(chatId);
+  const language = getLanguage(session);
+  const inline_keyboard = buildLanguageKeyboard(selectedCode ?? session?.language);
+  if (messageId) {
+    await bot.editMessageReplyMarkup({
+      chat_id: chatId,
+      message_id: messageId,
+      reply_markup: { inline_keyboard },
+    });
+    return;
+  }
   await bot.sendMessage(chatId, t(language, "language.menu_title"), {
-    reply_markup: {
-      inline_keyboard: LANGUAGES.map((lang) => [
-        {
-          text: lang.label,
-          callback_data: `${callbackPrefixes.language}:${lang.code}`,
-        },
-      ]),
-    },
+    reply_markup: { inline_keyboard },
   });
 }
 
@@ -200,7 +222,7 @@ async function handleStartCommand(message: Message) {
     } as Partial<RegistrationPayload>,
   };
   sessionStore.update(session.chatId, session);
-  await sendLanguageMenu(session.chatId, language);
+  await showLanguagePicker(session.chatId, language);
 }
 
 async function promptRegistrationStep(session: SessionData) {
@@ -1024,6 +1046,7 @@ async function handleCallbackQuery(callback: CallbackQuery) {
   if (!data) return;
   const message = callback.message;
   if (!message) return;
+  const messageId = message.message_id;
   const session = ensureSession(message);
   if (!session) return;
   const [prefix, ...parts] = data.split(":");
@@ -1033,6 +1056,9 @@ async function handleCallbackQuery(callback: CallbackQuery) {
         const language = parts[0] as LanguageCode;
         session.language = language;
         sessionStore.update(session.chatId, session);
+        if (messageId) {
+          await showLanguagePicker(session.chatId, language, messageId);
+        }
         if (session.jwt) {
           try {
             const client = createApiClient(session.jwt);
@@ -1176,7 +1202,7 @@ async function handleCallbackQuery(callback: CallbackQuery) {
             await bot.sendMessage(session.chatId, t(session.language, "ai.prompt"));
             break;
           case "CHANGE_LANGUAGE":
-            await sendLanguageMenu(session.chatId, session.language);
+            await showLanguagePicker(session.chatId, session.language);
             break;
           case "PROFILE":
             session.mode = "profile";
