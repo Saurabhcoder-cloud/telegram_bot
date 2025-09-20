@@ -13,3 +13,12 @@ export function isValidDate(value: string): boolean {
 export function normalizePhone(phone: string): string {
   return phone.replace(/[^\d+]/g, "");
 }
+
+export function isValidPhone(phone: string): boolean {
+  const normalized = normalizePhone(phone);
+  return normalized.length >= 7;
+}
+
+export function isValidState(value: string): boolean {
+  return /^[A-Za-z]{2}$/.test(value.trim().toUpperCase());
+}

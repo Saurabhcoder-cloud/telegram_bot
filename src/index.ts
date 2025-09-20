@@ -11,7 +11,7 @@ import {
   SessionData,
   UserProfile,
 } from "./types";
-import { isValidDate, isValidEmail, normalizePhone } from "./utils/validators";
+import { isValidDate, isValidEmail, isValidPhone, isValidState, normalizePhone } from "./utils/validators";
 import {
   FILING_STATUSES,
   INCOME_TYPES,
@@ -634,20 +634,47 @@ async function showProfile(session: SessionData) {
 
 async function handleProfileEditInput(session: SessionData, message: Message) {
   if (!session.profileEditor || !message.text || !session.jwt) return;
-  const field = session.profileEditor.editField;
+  const { editField, inputType } = session.profileEditor;
+  if (!editField) return;
   const language = session.language;
   const value = message.text.trim();
   if (!value) {
     await bot.sendMessage(session.chatId, t(language, "error.generic"));
     return;
   }
-  const payload: Partial<UserProfile> = { [field!]: value } as Partial<UserProfile>;
+
+  if (editField === "filingStatus" || editField === "incomeType") {
+    await bot.sendMessage(
+      session.chatId,
+      t(language, "profile.choose_option", { field: t(language, `profile.field_${editField}`) })
+    );
+    return;
+  }
+
+  let formattedValue: string | undefined = value;
+  if (inputType === "phone") {
+    const normalized = normalizePhone(value);
+    if (!isValidPhone(normalized)) {
+      await bot.sendMessage(session.chatId, t(language, "profile.invalid_phone"));
+      return;
+    }
+    formattedValue = normalized;
+  } else if (inputType === "state") {
+    const normalizedState = value.toUpperCase();
+    if (!isValidState(normalizedState)) {
+      await bot.sendMessage(session.chatId, t(language, "profile.invalid_state"));
+      return;
+    }
+    formattedValue = normalizedState;
+  }
+
+  const payload: Partial<UserProfile> = { [editField]: formattedValue } as Partial<UserProfile>;
   const client = createApiClient(session.jwt);
   try {
     const profile = await client.updateProfile(payload);
     session.profile = profile;
     session.profileEditor = undefined;
-    session.mode = "idle";
+    session.mode = "profile";
     sessionStore.update(session.chatId, session);
     await bot.sendMessage(session.chatId, t(language, "profile.updated"));
     await showProfile(session);
@@ -956,9 +983,56 @@ async function handleCallbackQuery(callback: CallbackQuery) {
         if (action === "EDIT") {
           const field = parts[1] as keyof UserProfile;
           session.mode = "profile";
-          session.profileEditor = { editField: field };
-          sessionStore.update(session.chatId, session);
-          await bot.sendMessage(session.chatId, t(session.language, "profile.update_prompt", { field: t(session.language, `profile.field_${field}`) }));
+          if (field === "filingStatus" || field === "incomeType") {
+            const options = field === "filingStatus" ? FILING_STATUSES : INCOME_TYPES;
+            session.profileEditor = { editField: field };
+            sessionStore.update(session.chatId, session);
+            const inline_keyboard = options.map((option) => [
+              {
+                text: formatOptionLabel(session.language, option),
+                callback_data: `${callbackPrefixes.profile}:SET:${field}:${option.value}`,
+              },
+            ]);
+            inline_keyboard.push([
+              { text: t(session.language, "menu.cancel"), callback_data: `${callbackPrefixes.profile}:CANCEL` },
+            ]);
+            await bot.sendMessage(
+              session.chatId,
+              t(session.language, "profile.choose_option", { field: t(session.language, `profile.field_${field}`) }),
+              { reply_markup: { inline_keyboard } }
+            );
+          } else {
+            session.profileEditor = {
+              editField: field,
+              inputType: field === "phone" ? "phone" : field === "state" ? "state" : "text",
+            };
+            sessionStore.update(session.chatId, session);
+            await bot.sendMessage(
+              session.chatId,
+              t(session.language, "profile.update_prompt", { field: t(session.language, `profile.field_${field}`) })
+            );
+          }
+        } else if (action === "SET") {
+          const field = parts[1] as keyof UserProfile;
+          const value = parts[2];
+          if (!session.jwt) break;
+          const client = createApiClient(session.jwt);
+          try {
+            const profile = await client.updateProfile({ [field]: value } as Partial<UserProfile>);
+            session.profile = profile;
+            session.profileEditor = undefined;
+            session.mode = "profile";
+            sessionStore.update(session.chatId, session);
+            await bot.sendMessage(session.chatId, t(session.language, "profile.updated"));
+            await showProfile(session);
+          } catch (error) {
+            if (isNetworkError(error)) {
+              await bot.sendMessage(session.chatId, t(session.language, "error.network"));
+              break;
+            }
+            logger.error("Profile update error %o", error);
+            await bot.sendMessage(session.chatId, t(session.language, "error.generic"));
+          }
         } else if (action === "CANCEL") {
           session.profileEditor = undefined;
           session.mode = "idle";

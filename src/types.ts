@@ -76,6 +76,7 @@ export interface SessionReminderState {
 export interface SessionProfileState {
   editField?: keyof UserProfile;
   data?: Partial<UserProfile>;
+  inputType?: "text" | "phone" | "state";
 }
 
 export type SessionMode =
