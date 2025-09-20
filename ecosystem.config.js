@@ -1,7 +1,7 @@
 module.exports = {
   apps: [
     {
-      name: "telegram-demo-bot",
+      name: "taxhelp-ai-telegram-bot",
       script: "dist/index.js",
       env: {
         NODE_ENV: "production"
