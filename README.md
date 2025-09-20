@@ -3,7 +3,7 @@
 A production-ready, multilingual Telegram assistant for TaxHelp AI customers. The bot is built with Node.js, TypeScript, and a lightweight `node-telegram-bot-api` integration that supports both webhook and long-polling deployments. It orchestrates the full taxpayer journey – onboarding, filing wizard, AI Q&A, payments, reminders, and document delivery – while synchronising profile data with the central TaxHelp AI platform.
 
 ## ✨ Features
-- **In-chat onboarding** with language picker (English, Spanish, Russian, Chinese, Arabic, Farsi) and fully validated registration/login flows.
+- **In-chat onboarding** with language picker (English, Spanish, Russian, Chinese, Arabic, Farsi), SMS phone verification, and fully validated registration/login flows.
 - **JWT-authenticated API client** for user, filing, payment, PDF, AI, and reminder endpoints with instant cross-platform profile sync.
 - **Step-by-step filing wizard** covering W‑2, 1099, Schedule C, deductions, dependents, education, medical, and mileage data with save/resume support.
 - **Localized main menu** (inline keyboard) for starting filings, viewing forms, downloading PDFs, paying invoices, chatting with AI, changing language, managing reminders, and editing profile details.
@@ -80,9 +80,24 @@ pm2 start ecosystem.config.js
 | `BOT_NAME`, `BOT_VERSION`, `BOT_AUTHOR` | Metadata used in logs and admin notifications |
 
 ## 🔗 API integration cheatsheet
-The bot relies on TaxHelp AI’s REST API. Below are representative payloads used in the workflows.
+The bot relies on TaxHelp AI’s REST API. Below are representative payloads used in the workflows. Phone numbers must be verified via the OTP endpoints before `/auth/register` is called, and users can trigger resend/change actions directly inside the chat.
 
 ```http
+POST /auth/phone/send-otp
+{
+  "phone": "+14085550123",
+  "language": "en",
+  "telegramId": 123456789
+}
+→ returns { "otpId": "otp_123", "resendAfter": 60 }
+
+POST /auth/phone/verify-otp
+{
+  "otpId": "otp_123",
+  "code": "123456"
+}
+→ returns { "verified": true }
+
 POST /auth/register
 {
   "fullName": "Avery Johnson",
