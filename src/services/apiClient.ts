@@ -20,11 +20,41 @@ class ApiError extends Error {
   status: number;
   code?: string;
 
-  constructor(message: string, status: number, code?: string) {
-    super(message);
+  constructor(message: string, status: number, code?: string, cause?: unknown) {
+    super(message, cause ? { cause } : undefined);
     this.status = status;
     this.code = code;
+    this.name = "ApiError";
+    Object.setPrototypeOf(this, new.target.prototype);
   }
+}
+
+const NETWORK_ERROR_CODES = new Set([
+  "ECONNREFUSED",
+  "ECONNRESET",
+  "ENOTFOUND",
+  "EAI_AGAIN",
+  "ETIMEDOUT",
+  "EHOSTUNREACH",
+  "EPIPE",
+  "UND_ERR_CONNECT",
+  "UND_ERR_CONNECT_TIMEOUT",
+  "UND_ERR_SOCKET",
+  "UND_ERR_HEADERS_TIMEOUT",
+]);
+
+function hasNetworkCode(value: unknown): boolean {
+  if (!value || typeof value !== "object") {
+    return false;
+  }
+  const { code, errno } = value as { code?: unknown; errno?: unknown };
+  if (typeof code === "string" && NETWORK_ERROR_CODES.has(code)) {
+    return true;
+  }
+  if (typeof errno === "string" && NETWORK_ERROR_CODES.has(errno)) {
+    return true;
+  }
+  return false;
 }
 
 export class ApiClient {
@@ -82,7 +112,7 @@ export class ApiClient {
       });
     } catch (error) {
       logger.warn("Network error while calling %s: %o", url, error);
-      throw new ApiError("Network request failed", 503, "network_error");
+      throw new ApiError("Network request failed", 503, "network_error", error);
     }
 
     const text = await response.text();
@@ -246,8 +276,52 @@ export function createApiClient(token?: string): ApiClient {
   return client;
 }
 
+function messageLooksNetworkRelated(message?: string): boolean {
+  if (!message) return false;
+  const normalized = message.toLowerCase();
+  return (
+    normalized.includes("network") ||
+    normalized.includes("fetch failed") ||
+    normalized.includes("timed out") ||
+    normalized.includes("timeout") ||
+    normalized.includes("enotfound") ||
+    normalized.includes("econnrefused")
+  );
+}
+
 export function isNetworkError(error: unknown): boolean {
-  return error instanceof ApiError && error.code === "network_error";
+  if (error instanceof ApiError && error.code === "network_error") {
+    return true;
+  }
+
+  if (error instanceof TypeError && messageLooksNetworkRelated(error.message)) {
+    return true;
+  }
+
+  if (!error || typeof error !== "object") {
+    return false;
+  }
+
+  if (hasNetworkCode(error)) {
+    return true;
+  }
+
+  if ("cause" in error) {
+    const { cause } = error as { cause?: unknown };
+    if (hasNetworkCode(cause)) {
+      return true;
+    }
+    if (cause instanceof Error && messageLooksNetworkRelated(cause.message)) {
+      return true;
+    }
+  }
+
+  const { message } = error as { message?: unknown };
+  if (typeof message === "string" && messageLooksNetworkRelated(message)) {
+    return true;
+  }
+
+  return false;
 }
 
 export { ApiError };
