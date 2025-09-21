@@ -39,6 +39,10 @@ type RegistrationStep = {
   options?: OptionDefinition[];
 };
 
+type MessageWithMarkup = Message & {
+  reply_markup?: { inline_keyboard?: InlineKeyboardButton[][] };
+};
+
 type FilingStep = {
   field: keyof FilingData;
   promptKey: string;
@@ -123,6 +127,42 @@ function getLanguage(session?: SessionData): LanguageCode {
   return session?.language ?? DEFAULT_LANGUAGE;
 }
 
+function inlineKeyboardsEqual(
+  a?: InlineKeyboardButton[][],
+  b?: InlineKeyboardButton[][],
+): boolean {
+  if (!a || !b) {
+    return false;
+  }
+  if (a.length !== b.length) {
+    return false;
+  }
+  for (let rowIndex = 0; rowIndex < a.length; rowIndex += 1) {
+    const rowA = a[rowIndex];
+    const rowB = b[rowIndex];
+    if (!rowB || rowA.length !== rowB.length) {
+      return false;
+    }
+    for (let colIndex = 0; colIndex < rowA.length; colIndex += 1) {
+      const buttonA = rowA[colIndex];
+      const buttonB = rowB[colIndex];
+      if (!buttonB) {
+        return false;
+      }
+      if (buttonA.text !== buttonB.text) {
+        return false;
+      }
+      if (buttonA.callback_data !== buttonB.callback_data) {
+        return false;
+      }
+      if (buttonA.url !== buttonB.url) {
+        return false;
+      }
+    }
+  }
+  return true;
+}
+
 export function buildLanguageKeyboard(selectedCode?: string): InlineKeyboardButton[][] {
   const rows: InlineKeyboardButton[][] = [];
   LANGUAGES.forEach((lang) => {
@@ -141,11 +181,19 @@ export function buildLanguageKeyboard(selectedCode?: string): InlineKeyboardButt
   return rows;
 }
 
-async function showLanguagePicker(chatId: number, selectedCode?: string, messageId?: number) {
+async function showLanguagePicker(
+  chatId: number,
+  selectedCode?: string,
+  messageId?: number,
+  currentMarkup?: InlineKeyboardButton[][],
+) {
   const session = sessionStore.get(chatId);
   const language = getLanguage(session);
   const inline_keyboard = buildLanguageKeyboard(selectedCode ?? session?.language);
   if (messageId) {
+    if (inlineKeyboardsEqual(currentMarkup, inline_keyboard)) {
+      return;
+    }
     await bot.editMessageReplyMarkup({
       chat_id: chatId,
       message_id: messageId,
@@ -1057,7 +1105,8 @@ async function handleCallbackQuery(callback: CallbackQuery) {
         session.language = language;
         sessionStore.update(session.chatId, session);
         if (messageId) {
-          await showLanguagePicker(session.chatId, language, messageId);
+          const markup = (message as MessageWithMarkup).reply_markup?.inline_keyboard;
+          await showLanguagePicker(session.chatId, language, messageId, markup);
         }
         if (session.jwt) {
           try {
