@@ -38,17 +38,10 @@ export interface UserProfile {
   lastSyncedAt?: string;
 }
 
-export interface SessionRegistrationOtpState {
-  otpId: string;
-  phone: string;
-  verified: boolean;
-  resendAvailableAt?: number;
-}
-
 export interface SessionRegistrationState {
   stepIndex: number;
   data: Partial<RegistrationPayload>;
-  otp?: SessionRegistrationOtpState;
+  phoneVerified?: boolean;
 }
 
 export interface SessionLoginState {
@@ -114,16 +107,6 @@ export interface SessionData {
 export interface ApiUserResponse {
   token: string;
   user: UserProfile;
-}
-
-export interface SendPhoneOtpResponse {
-  otpId: string;
-  resendAfter?: number;
-  expiresIn?: number;
-}
-
-export interface VerifyPhoneOtpResponse {
-  verified: boolean;
 }
 
 export interface ApiTaxForm {

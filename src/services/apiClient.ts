@@ -9,8 +9,6 @@ import {
   RegistrationPayload,
   UserProfile,
   AiResponse,
-  SendPhoneOtpResponse,
-  VerifyPhoneOtpResponse,
 } from "../types";
 
 const DEFAULT_TIMEOUT_MS = 10_000;
@@ -343,22 +341,6 @@ export class ApiClient {
     } finally {
       clearTimeout(timeoutId);
     }
-  }
-
-  async sendPhoneOtp(phone: string, language: LanguageCode, telegramId: number): Promise<SendPhoneOtpResponse> {
-    return this.request<SendPhoneOtpResponse>("/auth/phone/send-otp", {
-      method: "POST",
-      body: JSON.stringify({ phone, language, telegramId }),
-      auth: false,
-    });
-  }
-
-  async verifyPhoneOtp(otpId: string, code: string): Promise<VerifyPhoneOtpResponse> {
-    return this.request<VerifyPhoneOtpResponse>("/auth/phone/verify-otp", {
-      method: "POST",
-      body: JSON.stringify({ otpId, code }),
-      auth: false,
-    });
   }
 
   async register(payload: RegistrationPayload): Promise<ApiUserResponse> {

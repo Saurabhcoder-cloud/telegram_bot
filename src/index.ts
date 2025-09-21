@@ -1,17 +1,16 @@
-import TelegramBot, { CallbackQuery, InlineKeyboardButton, Message } from "node-telegram-bot-api";
+import TelegramBot, {
+  CallbackQuery,
+  InlineKeyboardButton,
+  Message,
+  ReplyKeyboardMarkup,
+  SendMessageOptions,
+} from "node-telegram-bot-api";
 import { createServer } from "http";
 import { config } from "./config";
 import logger from "./logger";
 import { LANGUAGES, languageLabel, t } from "./i18n";
 import { sessionStore } from "./session";
-import {
-  FilingData,
-  LanguageCode,
-  RegistrationPayload,
-  SendPhoneOtpResponse,
-  SessionData,
-  UserProfile,
-} from "./types";
+import { FilingData, LanguageCode, RegistrationPayload, SessionData, UserProfile } from "./types";
 import { isValidDate, isValidEmail, isValidPhone, isValidState, normalizePhone } from "./utils/validators";
 import {
   FILING_STATUSES,
@@ -28,14 +27,18 @@ import { ApiError, createApiClient, isNetworkError } from "./services/apiClient"
 
 const DEFAULT_LANGUAGE: LanguageCode = "en";
 
-type RegistrationField =
-  | Exclude<keyof RegistrationPayload, "language" | "telegramId">
-  | "otp";
+const SHARE_PHONE_KEYBOARD: ReplyKeyboardMarkup = {
+  keyboard: [[{ text: "📞 Share Phone Number", request_contact: true }]],
+  one_time_keyboard: true,
+  resize_keyboard: true,
+};
+
+type RegistrationField = Exclude<keyof RegistrationPayload, "language" | "telegramId">;
 
 type RegistrationStep = {
   field: RegistrationField;
   promptKey: string;
-  type: "text" | "email" | "date" | "select" | "optional" | "phone" | "otp";
+  type: "text" | "email" | "date" | "select" | "optional" | "phone";
   options?: OptionDefinition[];
 };
 
@@ -56,10 +59,9 @@ type LoginStep = {
 };
 
 const registrationSteps: RegistrationStep[] = [
+  { field: "phone", promptKey: "registration.ask_phone", type: "phone" },
   { field: "fullName", promptKey: "registration.ask_full_name", type: "text" },
   { field: "email", promptKey: "registration.ask_email", type: "email" },
-  { field: "phone", promptKey: "registration.ask_phone", type: "phone" },
-  { field: "otp", promptKey: "registration.ask_otp", type: "otp" },
   { field: "dob", promptKey: "registration.ask_dob", type: "date" },
   {
     field: "filingStatus",
@@ -293,6 +295,7 @@ async function handleStartCommand(message: Message) {
       telegramId: session.telegramId,
       language: session.language,
     } as Partial<RegistrationPayload>,
+    phoneVerified: false,
   };
   sessionStore.update(session.chatId, session);
   await showLanguagePicker(session.chatId, language);
@@ -321,62 +324,26 @@ async function promptRegistrationStep(session: SessionData) {
     return;
   }
 
-  let inline_keyboard: InlineKeyboardButton[][] | undefined;
-  let messageParams: Record<string, string | number | undefined> | undefined;
+  let replyMarkup: SendMessageOptions["reply_markup"] | undefined;
 
   if (step.type === "optional") {
-    inline_keyboard = [
-      [
-        {
-          text: t(language, "registration.optional_skip"),
-          callback_data: `${callbackPrefixes.registration}:SKIP:${step.field}`,
-        },
+    replyMarkup = {
+      inline_keyboard: [
+        [
+          {
+            text: t(language, "registration.optional_skip"),
+            callback_data: `${callbackPrefixes.registration}:SKIP:${step.field}`,
+          },
+        ],
       ],
-    ];
-  } else if (step.type === "otp") {
-    const otpState = registration.otp;
-    const phone = otpState?.phone ?? (registration.data.phone as string | undefined);
-    if (!otpState || !phone) {
-      const phoneIndex = findRegistrationStepIndex("phone");
-      if (phoneIndex !== -1) {
-        registration.stepIndex = phoneIndex;
-        session.registration = registration;
-        sessionStore.update(session.chatId, session);
-        await bot.sendMessage(session.chatId, t(language, "registration.phone_required"));
-        await promptRegistrationStep(session);
-        return;
-      }
-    }
-    inline_keyboard = [
-      [
-        {
-          text: t(language, "registration.resend_otp"),
-          callback_data: `${callbackPrefixes.registration}:RESEND_OTP`,
-        },
-      ],
-      [
-        {
-          text: t(language, "registration.change_phone"),
-          callback_data: `${callbackPrefixes.registration}:CHANGE_PHONE`,
-        },
-      ],
-    ];
-    messageParams = { phone };
+    };
+  } else if (step.type === "phone") {
+    replyMarkup = SHARE_PHONE_KEYBOARD;
   }
 
-  await bot.sendMessage(session.chatId, t(language, step.promptKey, messageParams), {
-    reply_markup: inline_keyboard ? { inline_keyboard } : undefined,
+  await bot.sendMessage(session.chatId, t(language, step.promptKey), {
+    reply_markup: replyMarkup,
   });
-
-  if (step.type === "otp" && registration.otp?.resendAvailableAt) {
-    const remainingMs = registration.otp.resendAvailableAt - Date.now();
-    if (remainingMs > 0) {
-      await bot.sendMessage(
-        session.chatId,
-        t(language, "registration.otp_resend_timer", { seconds: Math.ceil(remainingMs / 1000) })
-      );
-    }
-  }
 }
 
 async function finalizeRegistration(session: SessionData) {
@@ -385,24 +352,15 @@ async function finalizeRegistration(session: SessionData) {
   const language = getLanguage(session);
   const payload = registration.data as RegistrationPayload;
   const phone = registration.data.phone as string | undefined;
-  if (!phone) {
+  if (!phone || !registration.phoneVerified) {
     const phoneIndex = findRegistrationStepIndex("phone");
     if (phoneIndex !== -1) {
       registration.stepIndex = phoneIndex;
       session.registration = registration;
       sessionStore.update(session.chatId, session);
-      await bot.sendMessage(session.chatId, t(language, "registration.phone_required"));
-      await promptRegistrationStep(session);
-      return;
-    }
-  }
-  if (!registration.otp || !registration.otp.verified) {
-    const otpIndex = findRegistrationStepIndex("otp");
-    if (otpIndex !== -1) {
-      registration.stepIndex = otpIndex;
-      session.registration = registration;
-      sessionStore.update(session.chatId, session);
-      await bot.sendMessage(session.chatId, t(language, "registration.otp_required"));
+      await bot.sendMessage(session.chatId, t(language, "registration.phone_required"), {
+        reply_markup: SHARE_PHONE_KEYBOARD,
+      });
       await promptRegistrationStep(session);
       return;
     }
@@ -503,67 +461,28 @@ async function handleRegistrationResponse(session: SessionData, message: Message
   if (!step) return;
   const text = message.text.trim();
 
-  if (step.type === "otp") {
-    const otpState = registration.otp;
-    if (!otpState) {
-      const phoneIndex = findRegistrationStepIndex("phone");
-      if (phoneIndex !== -1) {
-        registration.stepIndex = phoneIndex;
-        session.registration = registration;
-        sessionStore.update(session.chatId, session);
-        await bot.sendMessage(session.chatId, t(language, "registration.phone_required"));
-        await promptRegistrationStep(session);
-      }
-      return;
-    }
-    const code = text.replace(/[^\d]/g, "");
-    if (code.length < 4) {
-      await bot.sendMessage(session.chatId, t(language, "registration.otp_invalid"));
-      return;
-    }
-    const verified = await verifyPhoneOtpCode(session, otpState.otpId, code);
-    if (!verified) {
-      return;
-    }
-    registration.otp = { ...otpState, verified: true, resendAvailableAt: undefined };
-    const otpIndex = findRegistrationStepIndex("otp");
-    registration.stepIndex = otpIndex !== -1 ? otpIndex + 1 : registration.stepIndex + 1;
-    session.registration = registration;
-    sessionStore.update(session.chatId, session);
-    await bot.sendMessage(session.chatId, t(language, "registration.otp_verified"));
-    await promptRegistrationStep(session);
-    return;
-  }
-
   if (step.type === "phone") {
     if (!text) {
-      await bot.sendMessage(session.chatId, t(language, "registration.invalid_phone"));
+      await bot.sendMessage(session.chatId, t(language, "registration.invalid_phone"), {
+        reply_markup: SHARE_PHONE_KEYBOARD,
+      });
       return;
     }
     const normalized = normalizePhone(text);
     if (!isValidPhone(normalized)) {
-      await bot.sendMessage(session.chatId, t(language, "registration.invalid_phone"));
+      await bot.sendMessage(session.chatId, t(language, "registration.invalid_phone"), {
+        reply_markup: SHARE_PHONE_KEYBOARD,
+      });
       return;
     }
-    const response = await requestPhoneOtp(session, normalized);
-    if (!response) {
-      await promptRegistrationStep(session);
-      return;
-    }
-    const resendAvailableAt =
-      typeof response.resendAfter === "number" ? Date.now() + response.resendAfter * 1000 : undefined;
     registration.data.phone = normalized;
-    registration.otp = {
-      otpId: response.otpId,
-      phone: normalized,
-      verified: false,
-      resendAvailableAt,
-    };
-    const otpIndex = findRegistrationStepIndex("otp");
-    registration.stepIndex = otpIndex !== -1 ? otpIndex : registration.stepIndex + 1;
+    registration.phoneVerified = true;
+    registration.stepIndex += 1;
     session.registration = registration;
     sessionStore.update(session.chatId, session);
-    await bot.sendMessage(session.chatId, t(language, "registration.otp_sent", { phone: normalized }));
+    await bot.sendMessage(session.chatId, t(language, "registration.phone_saved"), {
+      reply_markup: { remove_keyboard: true },
+    });
     await promptRegistrationStep(session);
     return;
   }
@@ -598,50 +517,6 @@ async function handleRegistrationResponse(session: SessionData, message: Message
   session.registration = registration;
   sessionStore.update(session.chatId, session);
   await promptRegistrationStep(session);
-}
-
-async function requestPhoneOtp(session: SessionData, phone: string): Promise<SendPhoneOtpResponse | null> {
-  const language = getLanguage(session);
-  try {
-    const client = createApiClient();
-    return await client.sendPhoneOtp(phone, session.language, session.telegramId);
-  } catch (error) {
-    if (isNetworkError(error)) {
-      await bot.sendMessage(session.chatId, t(language, "error.network"));
-    } else if (error instanceof ApiError) {
-      logger.warn("Failed to send phone OTP %o", error);
-      await bot.sendMessage(session.chatId, error.message || t(language, "registration.otp_send_failed"));
-    } else {
-      logger.error("Unexpected phone OTP error %o", error);
-      await bot.sendMessage(session.chatId, t(language, "registration.otp_send_failed"));
-    }
-    return null;
-  }
-}
-
-async function verifyPhoneOtpCode(session: SessionData, otpId: string, code: string): Promise<boolean> {
-  const language = getLanguage(session);
-  try {
-    const client = createApiClient();
-    const result = await client.verifyPhoneOtp(otpId, code);
-    if (!result.verified) {
-      await bot.sendMessage(session.chatId, t(language, "registration.otp_invalid"));
-      return false;
-    }
-    return true;
-  } catch (error) {
-    if (isNetworkError(error)) {
-      await bot.sendMessage(session.chatId, t(language, "error.network"));
-      return false;
-    }
-    if (error instanceof ApiError && error.status === 400) {
-      await bot.sendMessage(session.chatId, error.message || t(language, "registration.otp_invalid"));
-      return false;
-    }
-    logger.error("Phone OTP verification error %o", error);
-    await bot.sendMessage(session.chatId, t(language, "registration.otp_verify_failed"));
-    return false;
-  }
 }
 
 async function handleLoginResponse(session: SessionData, message: Message) {
@@ -1155,8 +1030,12 @@ async function handleCallbackQuery(callback: CallbackQuery) {
           session.registration = session.registration ?? {
             stepIndex: 0,
             data: { telegramId: session.telegramId, language } as Partial<RegistrationPayload>,
+            phoneVerified: false,
           };
           session.registration.stepIndex = 0;
+          session.registration.phoneVerified = false;
+          session.registration.data.language = language;
+          delete (session.registration.data as Record<string, unknown>).phone;
           session.mode = "registration";
           sessionStore.update(session.chatId, session);
           await promptRegistrationStep(session);
@@ -1171,10 +1050,6 @@ async function handleCallbackQuery(callback: CallbackQuery) {
         switch (action) {
           case "SKIP": {
             const field = parts[1] as RegistrationField;
-            if (field === "otp") {
-              await bot.sendMessage(session.chatId, t(language, "registration.otp_required"));
-              break;
-            }
             registration.data[field as keyof RegistrationPayload] = undefined as never;
             registration.stepIndex += 1;
             session.registration = registration;
@@ -1182,69 +1057,8 @@ async function handleCallbackQuery(callback: CallbackQuery) {
             await promptRegistrationStep(session);
             break;
           }
-          case "RESEND_OTP": {
-            const otpState = registration.otp;
-            if (!otpState) {
-              const phoneIndex = findRegistrationStepIndex("phone");
-              if (phoneIndex !== -1) {
-                registration.stepIndex = phoneIndex;
-                registration.otp = undefined;
-                session.registration = registration;
-                sessionStore.update(session.chatId, session);
-                await bot.sendMessage(session.chatId, t(language, "registration.phone_required"));
-                await promptRegistrationStep(session);
-              }
-              break;
-            }
-            const waitMs = (otpState.resendAvailableAt ?? 0) - Date.now();
-            if (waitMs > 0) {
-              await bot.sendMessage(
-                session.chatId,
-                t(language, "registration.otp_resend_wait", { seconds: Math.ceil(waitMs / 1000) })
-              );
-              break;
-            }
-            const response = await requestPhoneOtp(session, otpState.phone);
-            if (!response) {
-              break;
-            }
-            const resendAvailableAt =
-              typeof response.resendAfter === "number" ? Date.now() + response.resendAfter * 1000 : undefined;
-            registration.otp = {
-              otpId: response.otpId,
-              phone: otpState.phone,
-              verified: false,
-              resendAvailableAt,
-            };
-            const otpIndex = findRegistrationStepIndex("otp");
-            if (otpIndex !== -1) {
-              registration.stepIndex = otpIndex;
-            }
-            session.registration = registration;
-            sessionStore.update(session.chatId, session);
-            await bot.sendMessage(session.chatId, t(language, "registration.otp_resend_sent", { phone: otpState.phone }));
-            await promptRegistrationStep(session);
-            break;
-          }
-          case "CHANGE_PHONE": {
-            const phoneIndex = findRegistrationStepIndex("phone");
-            if (phoneIndex !== -1) {
-              registration.stepIndex = phoneIndex;
-              registration.otp = undefined;
-              delete (registration.data as Record<string, unknown>).phone;
-              session.registration = registration;
-              sessionStore.update(session.chatId, session);
-              await bot.sendMessage(session.chatId, t(language, "registration.change_phone_prompt"));
-              await promptRegistrationStep(session);
-            }
-            break;
-          }
           default: {
             const field = action as RegistrationField;
-            if (field === "otp") {
-              await bot.sendMessage(session.chatId, t(language, "registration.otp_required"));
-              break;
-            }
             const value = parts[1];
             registration.data[field as keyof RegistrationPayload] = value as never;
             registration.stepIndex += 1;
@@ -1512,6 +1326,35 @@ async function setupBot() {
       `• /start – restart onboarding\n` +
       `• /menu – ${t(language, "menu.title")}`;
     bot.sendMessage(session.chatId, help);
+  });
+
+  bot.on("contact", async (msg) => {
+    const session = ensureSession(msg);
+    if (!session) return;
+    if (session.mode !== "registration") return;
+    const registration = session.registration;
+    if (!registration) return;
+    const step = registrationSteps[registration.stepIndex];
+    if (!step || step.type !== "phone") return;
+    const raw = msg.contact?.phone_number;
+    if (!raw) return;
+    const phone = normalizePhone(raw);
+    const language = getLanguage(session);
+    if (!isValidPhone(phone)) {
+      await bot.sendMessage(session.chatId, t(language, "registration.invalid_phone"), {
+        reply_markup: SHARE_PHONE_KEYBOARD,
+      });
+      return;
+    }
+    registration.data.phone = phone;
+    registration.phoneVerified = true;
+    registration.stepIndex += 1;
+    session.registration = registration;
+    sessionStore.update(session.chatId, session);
+    await bot.sendMessage(session.chatId, t(language, "registration.phone_saved"), {
+      reply_markup: { remove_keyboard: true },
+    });
+    await promptRegistrationStep(session);
   });
 
   bot.on("message", handleMessage);

@@ -10,13 +10,13 @@ export function isValidDate(value: string): boolean {
   return date.getUTCFullYear() === year && date.getUTCMonth() + 1 === month && date.getUTCDate() === day;
 }
 
-export function normalizePhone(phone: string): string {
-  return phone.replace(/[^\d+]/g, "");
+export function normalizePhone(input: string): string {
+  return input.replace(/[^\d+]/g, "").replace(/^00/, "+");
 }
 
 export function isValidPhone(phone: string): boolean {
-  const normalized = normalizePhone(phone);
-  return normalized.length >= 7;
+  const digits = phone.replace(/[^\d]/g, "");
+  return digits.length >= 8 && digits.length <= 20;
 }
 
 export function isValidState(value: string): boolean {
