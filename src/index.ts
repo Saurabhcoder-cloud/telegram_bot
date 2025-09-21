@@ -108,6 +108,31 @@ const callbackPrefixes = {
 
 let bot: TelegramBot;
 
+async function ensureApiReachable() {
+  const client = createApiClient();
+  try {
+    await client.healthCheck();
+    logger.info("API health check succeeded for %s", config.apiBaseUrl);
+  } catch (error) {
+    if (isNetworkError(error)) {
+      const message = error instanceof Error ? error.message : String(error);
+      logger.error("API health check failed for %s due to connectivity: %s", config.apiBaseUrl, message);
+    } else if (error instanceof ApiError) {
+      logger.error(
+        "API health check failed for %s with status %d: %s",
+        config.apiBaseUrl,
+        error.status,
+        error.message
+      );
+    } else if (error instanceof Error) {
+      logger.error("API health check failed for %s: %s", config.apiBaseUrl, error.message);
+    } else {
+      logger.error("API health check failed for %s: %o", config.apiBaseUrl, error);
+    }
+    throw error;
+  }
+}
+
 function ensureSession(message: Message): SessionData | null {
   const chatId = message.chat?.id;
   const telegramId = message.from?.id;
@@ -1427,6 +1452,8 @@ async function handleMessage(message: Message) {
 }
 
 async function setupBot() {
+  await ensureApiReachable();
+
   if (config.webhookUrl) {
     bot = new TelegramBot(config.botToken, { polling: false });
     await bot.setWebHook(config.webhookUrl, config.webhookSecret ? { secret_token: config.webhookSecret } : undefined);

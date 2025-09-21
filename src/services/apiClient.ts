@@ -13,9 +13,16 @@ import {
   VerifyPhoneOtpResponse,
 } from "../types";
 
+const DEFAULT_TIMEOUT_MS = 10_000;
+const DEFAULT_RETRY_ATTEMPTS = 2;
+const DEFAULT_RETRY_DELAY_MS = 500;
+
 interface RequestOptions extends RequestInit {
   auth?: boolean;
   query?: Record<string, string | number | undefined>;
+  timeoutMs?: number;
+  retryAttempts?: number;
+  retryDelayMs?: number;
 }
 
 class ApiError extends Error {
@@ -38,12 +45,25 @@ const NETWORK_ERROR_CODES = new Set([
   "EAI_AGAIN",
   "ETIMEDOUT",
   "EHOSTUNREACH",
+  "ENETUNREACH",
+  "EHOSTDOWN",
+  "ECONNABORTED",
   "EPIPE",
+  "ABORT_ERR",
   "UND_ERR_CONNECT",
   "UND_ERR_CONNECT_TIMEOUT",
   "UND_ERR_SOCKET",
   "UND_ERR_HEADERS_TIMEOUT",
 ]);
+
+function isAbortError(error: unknown): boolean {
+  return (
+    error instanceof Error &&
+    (error.name === "AbortError" ||
+      (typeof (error as { code?: unknown }).code === "string" &&
+        (error as { code?: string }).code === "ABORT_ERR"))
+  );
+}
 
 function hasNetworkCode(value: unknown): boolean {
   if (!value || typeof value !== "object") {
@@ -71,6 +91,90 @@ export class ApiClient {
     this.token = token;
   }
 
+  private calculateRetryDelay(baseDelay: number, attempt: number): number {
+    return Math.round(baseDelay * Math.pow(2, attempt));
+  }
+
+  private async delay(ms: number): Promise<void> {
+    if (ms <= 0) {
+      return;
+    }
+    await new Promise((resolve) => setTimeout(resolve, ms));
+  }
+
+  private shouldRetryStatus(status: number): boolean {
+    return status >= 500 || status === 429;
+  }
+
+  private shouldRetryError(error: unknown): boolean {
+    if (!error) {
+      return false;
+    }
+
+    if (error instanceof ApiError) {
+      return (
+        error.code === "network_error" ||
+        error.code === "timeout" ||
+        error.code === "health_check_failed"
+      );
+    }
+
+    if (isAbortError(error)) {
+      return true;
+    }
+
+    if (error instanceof TypeError) {
+      return true;
+    }
+
+    if (hasNetworkCode(error)) {
+      return true;
+    }
+
+    const message = (error as { message?: unknown }).message;
+    if (typeof message === "string" && messageLooksNetworkRelated(message)) {
+      return true;
+    }
+
+    if (error && typeof error === "object" && "cause" in error) {
+      const cause = (error as { cause?: unknown }).cause;
+      if (cause && cause !== error) {
+        return this.shouldRetryError(cause);
+      }
+    }
+
+    return false;
+  }
+
+  private normalizeFetchError(
+    error: unknown,
+    url: string,
+    timeoutMs: number,
+    code: string = "network_error"
+  ): ApiError {
+    if (error instanceof ApiError) {
+      return error;
+    }
+
+    if (isAbortError(error)) {
+      logger.warn("Request to %s timed out after %dms", url, timeoutMs);
+      return new ApiError("Request timed out", 504, code === "network_error" ? "timeout" : code, error);
+    }
+
+    if (error instanceof TypeError || hasNetworkCode(error) || this.shouldRetryError(error)) {
+      logger.warn("Network error while calling %s: %o", url, error);
+      return new ApiError("Network request failed", 503, code, error);
+    }
+
+    if (error instanceof Error) {
+      logger.warn("Request to %s failed: %s", url, error.message);
+      return new ApiError(error.message || "Request failed", 500, code, error);
+    }
+
+    logger.warn("Request to %s failed with unknown error", url);
+    return new ApiError("Request failed", 500, code);
+  }
+
   private buildUrl(path: string, query?: Record<string, string | number | undefined>): string {
     const url = new URL(`${this.baseUrl}${path.startsWith("/") ? "" : "/"}${path}`);
     if (query) {
@@ -83,11 +187,24 @@ export class ApiClient {
   }
 
   private async request<T>(path: string, options: RequestOptions = {}): Promise<T> {
-    const { auth = true, query, headers, body, method = "GET" } = options;
+    const {
+      auth = true,
+      query,
+      headers,
+      body,
+      method = "GET",
+      timeoutMs = DEFAULT_TIMEOUT_MS,
+      retryAttempts = DEFAULT_RETRY_ATTEMPTS,
+      retryDelayMs = DEFAULT_RETRY_DELAY_MS,
+      signal: _signal,
+      ...rest
+    } = options;
+
     const url = this.buildUrl(path, query);
     const finalHeaders: Record<string, string> = {
       "Content-Type": "application/json",
     };
+
     if (headers) {
       if (headers instanceof Headers) {
         headers.forEach((value, key) => {
@@ -101,42 +218,131 @@ export class ApiClient {
         Object.assign(finalHeaders, headers as Record<string, string>);
       }
     }
+
     if (auth && this.token) {
       finalHeaders["Authorization"] = `Bearer ${this.token}`;
     }
 
-    let response: Response;
-    try {
-      response = await fetch(url, {
-        method,
-        headers: finalHeaders,
-        body,
-      });
-    } catch (error) {
-      logger.warn("Network error while calling %s: %o", url, error);
-      throw new ApiError("Network request failed", 503, "network_error", error);
-    }
+    for (let attempt = 0; attempt <= retryAttempts; attempt++) {
+      const isLastAttempt = attempt === retryAttempts;
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
 
-    const text = await response.text();
-    let payload: unknown = undefined;
-    if (text) {
       try {
-        payload = JSON.parse(text);
+        const fetchOptions: RequestInit = {
+          ...rest,
+          method,
+          headers: finalHeaders,
+          signal: controller.signal,
+        };
+
+        if (body !== undefined) {
+          fetchOptions.body = body;
+        }
+
+        const response = await fetch(url, fetchOptions);
+
+        if (!response.ok) {
+          if (!isLastAttempt && this.shouldRetryStatus(response.status)) {
+            const wait = this.calculateRetryDelay(retryDelayMs, attempt);
+            logger.warn(
+              "Retrying %s due to HTTP %d (attempt %d/%d) in %dms",
+              url,
+              response.status,
+              attempt + 1,
+              retryAttempts + 1,
+              wait
+            );
+            await this.delay(wait);
+            continue;
+          }
+
+          const errorText = await response.text();
+          let payload: unknown = undefined;
+          if (errorText) {
+            try {
+              payload = JSON.parse(errorText);
+            } catch {
+              payload = undefined;
+            }
+          }
+
+          const bodyJson = payload as { message?: string; code?: string } | undefined;
+          const message = bodyJson?.message || response.statusText || "Request failed";
+          logger.warn("API error %s -> %s (status %d)", url, message, response.status);
+          throw new ApiError(message, response.status, bodyJson?.code);
+        }
+
+        const text = await response.text();
+        if (!text) {
+          return undefined as T;
+        }
+
+        try {
+          return JSON.parse(text) as T;
+        } catch (error) {
+          logger.error("Failed to parse JSON response from %s: %o", url, error);
+          throw new ApiError("Invalid server response", response.status || 500, "invalid_response", error);
+        }
       } catch (error) {
-        logger.error("Failed to parse JSON response from %s: %o", url, error);
-        throw new ApiError("Invalid server response", response.status || 500, "invalid_response");
+        if (error instanceof ApiError) {
+          throw error;
+        }
+
+        if (!isLastAttempt && this.shouldRetryError(error)) {
+          const wait = this.calculateRetryDelay(retryDelayMs, attempt);
+          logger.warn(
+            "Retrying %s due to error: %s (attempt %d/%d) in %dms",
+            url,
+            error instanceof Error ? error.message : String(error),
+            attempt + 1,
+            retryAttempts + 1,
+            wait
+          );
+          await this.delay(wait);
+          continue;
+        }
+
+        throw this.normalizeFetchError(error, url, timeoutMs);
+      } finally {
+        clearTimeout(timeoutId);
       }
     }
 
-    if (!response.ok) {
-      const body = payload as { message?: string; code?: string } | undefined;
-      const message = body?.message || response.statusText || "Request failed";
-      const error = new ApiError(message, response.status, body?.code);
-      logger.warn("API error %s -> %s", url, message);
-      throw error;
-    }
+    throw new ApiError("Request failed", 500, "unknown_error");
+  }
 
-    return payload as T;
+  async healthCheck(timeoutMs: number = Math.min(DEFAULT_TIMEOUT_MS, 5000)): Promise<void> {
+    const url = this.buildUrl("/health");
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+
+    try {
+      const response = await fetch(url, {
+        method: "GET",
+        headers: { Accept: "application/json" },
+        signal: controller.signal,
+      });
+
+      if (!response.ok) {
+        if (response.status === 404 || response.status === 401 || response.status === 403) {
+          logger.warn(
+            "API health endpoint returned %d at %s",
+            response.status,
+            url
+          );
+          return;
+        }
+
+        const text = await response.text().catch(() => "");
+        const message = text || `Health check failed with status ${response.status}`;
+        throw new ApiError(message, response.status, "health_check_failed");
+      }
+    } catch (error) {
+      throw this.normalizeFetchError(error, url, timeoutMs, "health_check_failed");
+    } finally {
+      clearTimeout(timeoutId);
+    }
   }
 
   async sendPhoneOtp(phone: string, language: LanguageCode, telegramId: number): Promise<SendPhoneOtpResponse> {
@@ -249,12 +455,50 @@ export class ApiClient {
     if (this.token) {
       headers["Authorization"] = `Bearer ${this.token}`;
     }
-    const response = await fetch(url, { headers });
-    if (!response.ok) {
-      const text = await response.text();
-      throw new ApiError(text || "Failed to download PDF", response.status);
+    for (let attempt = 0; attempt <= DEFAULT_RETRY_ATTEMPTS; attempt++) {
+      const isLastAttempt = attempt === DEFAULT_RETRY_ATTEMPTS;
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), DEFAULT_TIMEOUT_MS);
+      try {
+        const response = await fetch(url, { headers, signal: controller.signal });
+        if (!response.ok) {
+          if (!isLastAttempt && this.shouldRetryStatus(response.status)) {
+            const wait = this.calculateRetryDelay(DEFAULT_RETRY_DELAY_MS, attempt);
+            logger.warn(
+              "Retrying %s download due to HTTP %d (attempt %d/%d) in %dms",
+              url,
+              response.status,
+              attempt + 1,
+              DEFAULT_RETRY_ATTEMPTS + 1,
+              wait
+            );
+            await this.delay(wait);
+            continue;
+          }
+          const text = await response.text();
+          throw new ApiError(text || "Failed to download PDF", response.status);
+        }
+        return await response.blob();
+      } catch (error) {
+        if (!isLastAttempt && this.shouldRetryError(error)) {
+          const wait = this.calculateRetryDelay(DEFAULT_RETRY_DELAY_MS, attempt);
+          logger.warn(
+            "Retrying %s download due to error: %s (attempt %d/%d) in %dms",
+            url,
+            error instanceof Error ? error.message : String(error),
+            attempt + 1,
+            DEFAULT_RETRY_ATTEMPTS + 1,
+            wait
+          );
+          await this.delay(wait);
+          continue;
+        }
+        throw this.normalizeFetchError(error, url, DEFAULT_TIMEOUT_MS);
+      } finally {
+        clearTimeout(timeoutId);
+      }
     }
-    return await response.blob();
+    throw new ApiError("Failed to download PDF", 500, "unknown_error");
   }
 
   async createPaymentSession(): Promise<{ checkoutUrl: string; sessionId: string }> {
@@ -308,7 +552,14 @@ function messageLooksNetworkRelated(message?: string): boolean {
 }
 
 export function isNetworkError(error: unknown): boolean {
-  if (error instanceof ApiError && error.code === "network_error") {
+  if (
+    error instanceof ApiError &&
+    (error.code === "network_error" || error.code === "timeout" || error.code === "health_check_failed")
+  ) {
+    return true;
+  }
+
+  if (isAbortError(error)) {
     return true;
   }
 
@@ -327,6 +578,9 @@ export function isNetworkError(error: unknown): boolean {
   if ("cause" in error) {
     const { cause } = error as { cause?: unknown };
     if (hasNetworkCode(cause)) {
+      return true;
+    }
+    if (isAbortError(cause)) {
       return true;
     }
     if (cause instanceof Error && messageLooksNetworkRelated(cause.message)) {
