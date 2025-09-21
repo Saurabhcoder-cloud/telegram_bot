@@ -81,8 +81,8 @@ export class ApiClient {
   private baseUrl: string;
   private token?: string;
 
-  constructor(baseUrl: string) {
-    this.baseUrl = baseUrl.replace(/\/$/, "");
+  constructor(baseUrl: string | undefined | null) {
+    this.baseUrl = (baseUrl ?? "").trim().replace(/\/$/, "");
   }
 
   setToken(token?: string) {
@@ -173,8 +173,25 @@ export class ApiClient {
     return new ApiError("Request failed", 500, code);
   }
 
+  private hasBaseUrl(): boolean {
+    return this.baseUrl.length > 0;
+  }
+
+  private isAbsoluteUrl(path: string): boolean {
+    return /^https?:\/\//i.test(path);
+  }
+
   private buildUrl(path: string, query?: Record<string, string | number | undefined>): string {
-    const url = new URL(`${this.baseUrl}${path.startsWith("/") ? "" : "/"}${path}`);
+    let target = path;
+    if (!this.isAbsoluteUrl(path)) {
+      if (!this.hasBaseUrl()) {
+        throw new ApiError("API base URL is not configured", 503, "network_error");
+      }
+      const normalizedPath = path.startsWith("/") ? path : `/${path}`;
+      target = `${this.baseUrl}${normalizedPath}`;
+    }
+
+    const url = new URL(target);
     if (query) {
       for (const [key, value] of Object.entries(query)) {
         if (value === undefined || value === null) continue;
@@ -311,6 +328,11 @@ export class ApiClient {
   }
 
   async healthCheck(timeoutMs: number = Math.min(DEFAULT_TIMEOUT_MS, 5000)): Promise<void> {
+    if (!this.hasBaseUrl()) {
+      logger.info("Skipping API health check because base URL is empty");
+      return;
+    }
+
     const url = this.buildUrl("/health");
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), timeoutMs);

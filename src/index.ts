@@ -111,6 +111,10 @@ const callbackPrefixes = {
 let bot: TelegramBot;
 
 async function ensureApiReachable() {
+  if (!config.apiBaseUrl || config.apiBaseUrl.trim().length === 0) {
+    logger.info("Skipping API health check because API_BASE_URL is not configured");
+    return;
+  }
   const client = createApiClient();
   try {
     await client.healthCheck();
