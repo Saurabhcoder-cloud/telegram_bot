@@ -327,10 +327,12 @@ export class ApiClient {
     throw new ApiError("Request failed", 500, "unknown_error");
   }
 
-  async healthCheck(timeoutMs: number = Math.min(DEFAULT_TIMEOUT_MS, 5000)): Promise<void> {
+  async healthCheck(
+    timeoutMs: number = Math.min(DEFAULT_TIMEOUT_MS, 5000),
+  ): Promise<{ ok: true } | { ok: false; reason: string }> {
     if (!this.hasBaseUrl()) {
       logger.info("Skipping API health check because base URL is empty");
-      return;
+      return { ok: true };
     }
 
     const url = this.buildUrl("/health");
@@ -349,17 +351,21 @@ export class ApiClient {
           logger.warn(
             "API health endpoint returned %d at %s",
             response.status,
-            url
+            url,
           );
-          return;
+          return { ok: true };
         }
 
         const text = await response.text().catch(() => "");
         const message = text || `Health check failed with status ${response.status}`;
-        throw new ApiError(message, response.status, "health_check_failed");
+        logger.warn("API health check failed for %s: %s", url, message);
+        return { ok: false, reason: message };
       }
+
+      return { ok: true };
     } catch (error) {
-      throw this.normalizeFetchError(error, url, timeoutMs, "health_check_failed");
+      const normalized = this.normalizeFetchError(error, url, timeoutMs, "health_check_failed");
+      return { ok: false, reason: normalized.message };
     } finally {
       clearTimeout(timeoutId);
     }

@@ -111,31 +111,22 @@ const callbackPrefixes = {
 let bot: TelegramBot;
 
 async function ensureApiReachable() {
-  if (!config.apiBaseUrl || config.apiBaseUrl.trim().length === 0) {
-    logger.info("Skipping API health check because API_BASE_URL is not configured");
+  const baseUrl = config.apiBaseUrl?.trim();
+  if (!baseUrl) {
+    logger.info("Starting in offline mode; skipping API health check");
     return;
   }
+
   const client = createApiClient();
   try {
-    await client.healthCheck();
-    logger.info("API health check succeeded for %s", config.apiBaseUrl);
-  } catch (error) {
-    if (isNetworkError(error)) {
-      const message = error instanceof Error ? error.message : String(error);
-      logger.error("API health check failed for %s due to connectivity: %s", config.apiBaseUrl, message);
-    } else if (error instanceof ApiError) {
-      logger.error(
-        "API health check failed for %s with status %d: %s",
-        config.apiBaseUrl,
-        error.status,
-        error.message
-      );
-    } else if (error instanceof Error) {
-      logger.error("API health check failed for %s: %s", config.apiBaseUrl, error.message);
+    const result = await client.healthCheck();
+    if (result.ok) {
+      logger.info("API health check succeeded for %s", baseUrl);
     } else {
-      logger.error("API health check failed for %s: %o", config.apiBaseUrl, error);
+      logger.warn("API health check failed for %s: %s", baseUrl, result.reason);
     }
-    throw error;
+  } catch (error) {
+    logger.error("Unexpected error during API health check: %o", error);
   }
 }
 

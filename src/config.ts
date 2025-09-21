@@ -2,17 +2,16 @@ import dotenv from "dotenv";
 
 dotenv.config({ override: true });
 
-const required = ["BOT_TOKEN", "API_BASE_URL"] as const;
-
-for (const key of required) {
-  if (!process.env[key] || process.env[key]?.trim().length === 0) {
-    throw new Error(`Missing required environment variable: ${key}`);
-  }
+if (!process.env.BOT_TOKEN || process.env.BOT_TOKEN.trim().length === 0) {
+  throw new Error("Missing required environment variable: BOT_TOKEN");
 }
+
+const rawApiBaseUrl = process.env.API_BASE_URL ?? "";
+const sanitizedApiBaseUrl = rawApiBaseUrl.trim().replace(/\/$/, "");
 
 export const config = {
   botToken: process.env.BOT_TOKEN!,
-  apiBaseUrl: process.env.API_BASE_URL!,
+  apiBaseUrl: sanitizedApiBaseUrl,
   stripePublishableKey: process.env.STRIPE_KEY ?? "",
   adminChatId: process.env.ADMIN_CHAT_ID,
   environment: process.env.NODE_ENV ?? "development",
