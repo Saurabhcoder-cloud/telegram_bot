@@ -28,7 +28,7 @@ type RegistrationField = Exclude<keyof RegistrationPayload, "language" | "telegr
 type RegistrationStep = {
   field: RegistrationField;
   promptKey: string;
-  type: "text" | "email" | "date" | "select" | "optional";
+  type: "text" | "email" | "password" | "date" | "select" | "optional";
   options?: { value: string; labelKey: string }[];
 };
 
@@ -44,9 +44,12 @@ type LoginStep = {
   type: "email" | "password";
 };
 
+type MessageWithContact = Message & { contact?: { phone_number?: string } };
+
 const registrationSteps: RegistrationStep[] = [
   { field: "fullName", promptKey: "registration.ask_full_name", type: "text" },
   { field: "email", promptKey: "registration.ask_email", type: "email" },
+  { field: "password", promptKey: "registration.ask_password", type: "password" },
   { field: "phone", promptKey: "registration.ask_phone", type: "optional" },
   { field: "dob", promptKey: "registration.ask_dob", type: "date" },
   {
@@ -161,13 +164,18 @@ async function handleStartCommand(message: Message) {
       const client = createApiClient();
       const existing = await client.getProfileByTelegramId(session.telegramId);
       if (existing) {
-        session.jwt = existing.token;
-        session.profile = existing.user;
+        session.jwt = undefined;
+        session.profile = undefined;
         session.language = existing.user.language;
-        session.mode = "idle";
+        session.mode = "login";
+        session.registration = undefined;
+        session.login = { stepIndex: 0 };
         sessionStore.update(session.chatId, session);
-        await bot.sendMessage(session.chatId, t(session.language, "registration.success_returning", { name: existing.user.fullName }));
-        await sendMainMenu(session);
+        await bot.sendMessage(
+          session.chatId,
+          t(session.language, "login.prompt_returning", { name: existing.user.fullName })
+        );
+        await promptLoginStep(session);
         return;
       }
     } catch (error) {
@@ -302,11 +310,17 @@ async function finalizeLogin(session: SessionData) {
 
 async function handleRegistrationResponse(session: SessionData, message: Message) {
   const registration = session.registration;
-  if (!registration || !message.text) return;
+  if (!registration) return;
   const step = registrationSteps[registration.stepIndex];
   const language = getLanguage(session);
   if (!step) return;
-  const text = message.text.trim();
+  const messageWithContact = message as MessageWithContact;
+  const contactValue = messageWithContact.contact?.phone_number?.trim();
+  const textValue = message.text?.trim();
+  let text = textValue && textValue.length > 0 ? textValue : "";
+  if (!text && step.field === "phone" && contactValue) {
+    text = contactValue;
+  }
 
   switch (step.type) {
     case "text":
@@ -322,6 +336,13 @@ async function handleRegistrationResponse(session: SessionData, message: Message
         return;
       }
       registration.data[step.field] = text.toLowerCase();
+      break;
+    case "password":
+      if (!text || text.length < 6) {
+        await bot.sendMessage(session.chatId, t(language, "registration.invalid_password"));
+        return;
+      }
+      registration.data[step.field] = text;
       break;
     case "optional":
       if (!text || text.toLowerCase() === t(language, "registration.optional_skip").toLowerCase()) {
@@ -908,30 +929,40 @@ async function handleCallbackQuery(callback: CallbackQuery) {
 }
 
 async function handleMessage(message: Message) {
-  if (!message.text || message.text.startsWith("/")) return;
+  if (message.text?.startsWith("/")) return;
   const session = ensureSession(message);
   if (!session) return;
+  const messageWithContact = message as MessageWithContact;
+  const hasText = Boolean(message.text && message.text.trim().length > 0);
+  const hasContact = Boolean(messageWithContact.contact);
+  if (!hasText && !hasContact) return;
 
   switch (session.mode) {
     case "registration":
       await handleRegistrationResponse(session, message);
       break;
     case "login":
+      if (!hasText) return;
       await handleLoginResponse(session, message);
       break;
     case "filing":
+      if (!hasText) return;
       await handleFilingResponse(session, message);
       break;
     case "ai":
+      if (!hasText) return;
       await handleAiQuestion(session, message);
       break;
     case "profile":
+      if (!hasText) return;
       await handleProfileEditInput(session, message);
       break;
     case "reminder":
+      if (!hasText) return;
       await handleReminderInput(session, message);
       break;
     default:
+      if (!hasText) return;
       await sendMainMenu(session);
       break;
   }

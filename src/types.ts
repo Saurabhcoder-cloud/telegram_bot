@@ -9,6 +9,7 @@ export interface LanguageOption {
 export interface RegistrationPayload {
   fullName: string;
   email: string;
+  password: string;
   phone?: string;
   dob: string;
   filingStatus: string;
