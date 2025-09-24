@@ -10,8 +10,15 @@ import { config } from "./config";
 import logger from "./logger";
 import { LANGUAGES, languageLabel, t } from "./i18n";
 import { sessionStore } from "./session";
-import { FilingData, LanguageCode, RegistrationPayload, SessionData, UserProfile } from "./types";
-import { isValidDate, isValidEmail, isValidPhone, isValidState, normalizePhone } from "./utils/validators";
+import {
+  FilingData,
+  LanguageCode,
+  RegistrationPayload,
+  SessionData,
+  SessionRegistrationState,
+  UserProfile,
+} from "./types";
+import { isValidDate, isValidEmail, isValidPhone, isValidStateRegion, normalizePhone } from "./utils/validators";
 import {
   FILING_STATUSES,
   INCOME_TYPES,
@@ -24,6 +31,9 @@ import {
   type OptionDefinition,
 } from "./constants";
 import { ApiError, createApiClient, isNetworkError } from "./services/apiClient";
+import { COUNTRIES, STATES } from "./data/locations";
+import { buildKeyboard, NAV_BACK, NAV_CANCEL, NAV_NEXT, NAV_PREV, paginate } from "./utils/keyboard";
+import { enqueueProfilePatch, startProfileSync } from "./utils/sync";
 
 const DEFAULT_LANGUAGE: LanguageCode = "en";
 
@@ -38,7 +48,7 @@ type RegistrationField = Exclude<keyof RegistrationPayload, "language" | "telegr
 type RegistrationStep = {
   field: RegistrationField;
   promptKey: string;
-  type: "text" | "email" | "date" | "select" | "optional" | "phone";
+  type: "text" | "email" | "date" | "select" | "optional" | "phone" | "country" | "state";
   options?: OptionDefinition[];
 };
 
@@ -63,6 +73,8 @@ const registrationSteps: RegistrationStep[] = [
   { field: "fullName", promptKey: "registration.ask_full_name", type: "text" },
   { field: "email", promptKey: "registration.ask_email", type: "email" },
   { field: "dob", promptKey: "registration.ask_dob", type: "date" },
+  { field: "country", promptKey: "registration.ask_country", type: "country" },
+  { field: "stateRegion", promptKey: "registration.ask_state_region_list", type: "state" },
   {
     field: "filingStatus",
     promptKey: "registration.ask_filing_status",
@@ -75,8 +87,10 @@ const registrationSteps: RegistrationStep[] = [
     type: "select",
     options: INCOME_TYPES,
   },
-  { field: "state", promptKey: "registration.ask_state", type: "text" },
 ];
+
+const COUNTRY_PAGE_SIZE = 8;
+const STATE_PAGE_SIZE = 8;
 
 function findRegistrationStepIndex(field: RegistrationField): number {
   return registrationSteps.findIndex((step) => step.field === field);
@@ -183,6 +197,19 @@ function inlineKeyboardsEqual(
     }
   }
   return true;
+}
+
+function ensureUiState(session: SessionData) {
+  if (!session.ui) {
+    session.ui = {};
+  }
+  return session.ui;
+}
+
+function clampPage(page: number | undefined, totalPages: number): number {
+  if (totalPages <= 1) return 0;
+  const next = typeof page === "number" ? page : 0;
+  return Math.min(Math.max(next, 0), totalPages - 1);
 }
 
 export function buildLanguageKeyboard(selectedCode?: string): InlineKeyboardButton[][] {
@@ -306,6 +333,63 @@ async function promptRegistrationStep(session: SessionData) {
     return;
   }
 
+  if (step.type === "country") {
+    const ui = ensureUiState(session);
+    const totalPages = Math.max(1, Math.ceil(COUNTRIES.length / COUNTRY_PAGE_SIZE));
+    ui.countryPage = clampPage(ui.countryPage, totalPages);
+    sessionStore.update(session.chatId, { ui: { ...ui } });
+    const { pageItems } = paginate(COUNTRIES, ui.countryPage, COUNTRY_PAGE_SIZE);
+    const keyboard = buildKeyboard(pageItems, ui.countryPage, totalPages, "country");
+    await bot.sendMessage(session.chatId, t(language, step.promptKey), {
+      reply_markup: keyboard,
+    });
+    return;
+  }
+
+  if (step.type === "state") {
+    const country = registration.data.country;
+    if (!country) {
+      const countryIndex = findRegistrationStepIndex("country");
+      if (countryIndex !== -1) {
+        registration.stepIndex = countryIndex;
+        session.registration = registration;
+        sessionStore.update(session.chatId, { registration });
+        await promptRegistrationStep(session);
+      }
+      return;
+    }
+    const list = STATES[country];
+    if (Array.isArray(list) && list.length > 0) {
+      const ui = ensureUiState(session);
+      const totalPages = Math.max(1, Math.ceil(list.length / STATE_PAGE_SIZE));
+      ui.statePage = clampPage(ui.statePage, totalPages);
+      sessionStore.update(session.chatId, { ui: { ...ui } });
+      const { pageItems } = paginate(list, ui.statePage, STATE_PAGE_SIZE);
+      const keyboard = buildKeyboard(pageItems, ui.statePage, totalPages, "state");
+      await bot.sendMessage(
+        session.chatId,
+        t(language, "registration.ask_state_region_list", { country }),
+        { reply_markup: keyboard },
+      );
+      return;
+    }
+    registration.stateRetryCount = 0;
+    session.registration = registration;
+    sessionStore.update(session.chatId, { registration });
+    const manualKeyboard: ReplyKeyboardMarkup = {
+      keyboard: [[{ text: NAV_BACK }, { text: NAV_CANCEL }]],
+      resize_keyboard: true,
+      one_time_keyboard: false,
+      selective: true,
+    };
+    await bot.sendMessage(
+      session.chatId,
+      t(language, "registration.ask_state_region_free", { country }),
+      { reply_markup: manualKeyboard },
+    );
+    return;
+  }
+
   if (step.type === "select" && step.options) {
     const rows = step.options.map((option) => [
       {
@@ -337,8 +421,212 @@ async function promptRegistrationStep(session: SessionData) {
   }
 
   await bot.sendMessage(session.chatId, t(language, step.promptKey), {
-    reply_markup: replyMarkup,
+    reply_markup: replyMarkup ?? { remove_keyboard: true },
   });
+}
+
+async function cancelRegistrationFlow(session: SessionData) {
+  const language = getLanguage(session);
+  session.mode = "idle";
+  session.registration = undefined;
+  session.ui = {};
+  sessionStore.update(session.chatId, {
+    mode: session.mode,
+    registration: session.registration,
+    ui: session.ui,
+  });
+  await bot.sendMessage(session.chatId, t(language, "registration.cancelled"), {
+    reply_markup: { remove_keyboard: true },
+  });
+  await sendMainMenu(session);
+}
+
+async function persistLocationSelection(
+  session: SessionData,
+  country: string,
+  stateRegion: string,
+): Promise<"online" | "queued"> {
+  let status: "online" | "queued" = "queued";
+  if (session.jwt && config.apiBaseUrl?.trim()) {
+    try {
+      const client = createApiClient(session.jwt);
+      const profile = await client.updateProfile({ country, stateRegion });
+      session.profile = profile;
+      sessionStore.update(session.chatId, { profile });
+      status = "online";
+    } catch (error) {
+      if (isNetworkError(error)) {
+        logger.warn("Deferred profile update for chatId=%d due to network error", session.chatId);
+      } else {
+        logger.error("Profile update error chatId=%d %o", session.chatId, error);
+      }
+    }
+  }
+
+  if (status === "queued") {
+    enqueueProfilePatch(session.chatId, { country, stateRegion });
+    if (session.profile) {
+      session.profile.country = country;
+      session.profile.stateRegion = stateRegion;
+      sessionStore.update(session.chatId, { profile: session.profile });
+    }
+  }
+
+  return status;
+}
+
+async function handleCountryInput(
+  session: SessionData,
+  registration: SessionRegistrationState,
+  rawText: string,
+): Promise<void> {
+  const language = getLanguage(session);
+  const text = rawText.trim();
+  if (!text) {
+    await bot.sendMessage(session.chatId, t(language, "registration.country_invalid"));
+    return;
+  }
+
+  if (text === NAV_CANCEL) {
+    await cancelRegistrationFlow(session);
+    return;
+  }
+
+  if (text === NAV_BACK) {
+    registration.stepIndex = Math.max(0, registration.stepIndex - 1);
+    session.registration = registration;
+    sessionStore.update(session.chatId, { registration });
+    await promptRegistrationStep(session);
+    return;
+  }
+
+  const totalPages = Math.max(1, Math.ceil(COUNTRIES.length / COUNTRY_PAGE_SIZE));
+  const ui = ensureUiState(session);
+
+  if (text === NAV_PREV) {
+    ui.countryPage = clampPage((ui.countryPage ?? 0) - 1, totalPages);
+    sessionStore.update(session.chatId, { ui: { ...ui } });
+    await promptRegistrationStep(session);
+    return;
+  }
+
+  if (text === NAV_NEXT) {
+    ui.countryPage = clampPage((ui.countryPage ?? 0) + 1, totalPages);
+    sessionStore.update(session.chatId, { ui: { ...ui } });
+    await promptRegistrationStep(session);
+    return;
+  }
+
+  const match = COUNTRIES.find((country) => country.toLowerCase() === text.toLowerCase());
+  if (!match) {
+    await bot.sendMessage(session.chatId, t(language, "registration.country_invalid"));
+    return;
+  }
+
+  registration.data.country = match;
+  delete registration.data.stateRegion;
+  registration.stateRetryCount = 0;
+  registration.stepIndex += 1;
+  const updatedUi = ensureUiState(session);
+  updatedUi.statePage = 0;
+  session.registration = registration;
+  sessionStore.update(session.chatId, { registration, ui: { ...updatedUi } });
+  logger.info("country=%s selected chatId=%d", match, session.chatId);
+  await promptRegistrationStep(session);
+}
+
+async function handleStateInput(
+  session: SessionData,
+  registration: SessionRegistrationState,
+  rawText: string,
+): Promise<void> {
+  const language = getLanguage(session);
+  const text = rawText.trim();
+  const country = registration.data.country;
+  if (!country) {
+    await promptRegistrationStep(session);
+    return;
+  }
+
+  if (!text) {
+    await bot.sendMessage(session.chatId, t(language, "registration.state_retry"));
+    return;
+  }
+
+  if (text === NAV_CANCEL) {
+    await cancelRegistrationFlow(session);
+    return;
+  }
+
+  if (text === NAV_BACK) {
+    const countryIndex = findRegistrationStepIndex("country");
+    if (countryIndex !== -1) {
+      registration.stepIndex = countryIndex;
+      session.registration = registration;
+      sessionStore.update(session.chatId, { registration });
+      await promptRegistrationStep(session);
+    }
+    return;
+  }
+
+  const list = STATES[country];
+  if (Array.isArray(list) && list.length > 0) {
+    const totalPages = Math.max(1, Math.ceil(list.length / STATE_PAGE_SIZE));
+    const ui = ensureUiState(session);
+    if (text === NAV_PREV) {
+      ui.statePage = clampPage((ui.statePage ?? 0) - 1, totalPages);
+      sessionStore.update(session.chatId, { ui: { ...ui } });
+      await promptRegistrationStep(session);
+      return;
+    }
+    if (text === NAV_NEXT) {
+      ui.statePage = clampPage((ui.statePage ?? 0) + 1, totalPages);
+      sessionStore.update(session.chatId, { ui: { ...ui } });
+      await promptRegistrationStep(session);
+      return;
+    }
+    const match = list.find((item) => item.toLowerCase() === text.toLowerCase());
+    if (!match) {
+      await bot.sendMessage(session.chatId, t(language, "registration.state_invalid_choice"));
+      return;
+    }
+    registration.data.stateRegion = match;
+    registration.stateRetryCount = 0;
+    registration.stepIndex += 1;
+    session.registration = registration;
+    sessionStore.update(session.chatId, { registration });
+    const status = await persistLocationSelection(session, country, match);
+    logger.info("stateRegion=%s selected status=%s chatId=%d", match, status, session.chatId);
+    const messageKey =
+      status === "online" ? "registration.state_saved_online" : "registration.state_saved_offline";
+    await bot.sendMessage(session.chatId, t(language, messageKey, { country, state: match }), {
+      reply_markup: { remove_keyboard: true },
+    });
+    await promptRegistrationStep(session);
+    return;
+  }
+
+  if (!isValidStateRegion(text)) {
+    registration.stateRetryCount = (registration.stateRetryCount ?? 0) + 1;
+    session.registration = registration;
+    sessionStore.update(session.chatId, { registration });
+    await bot.sendMessage(session.chatId, t(language, "registration.state_retry"));
+    return;
+  }
+
+  registration.data.stateRegion = text;
+  registration.stateRetryCount = 0;
+  registration.stepIndex += 1;
+  session.registration = registration;
+  sessionStore.update(session.chatId, { registration });
+  const status = await persistLocationSelection(session, country, text);
+  logger.info("stateRegion=%s selected status=%s chatId=%d", text, status, session.chatId);
+  const messageKey =
+    status === "online" ? "registration.state_saved_online" : "registration.state_saved_offline";
+  await bot.sendMessage(session.chatId, t(language, messageKey, { country, state: text }), {
+    reply_markup: { remove_keyboard: true },
+  });
+  await promptRegistrationStep(session);
 }
 
 async function finalizeRegistration(session: SessionData) {
@@ -479,6 +767,16 @@ async function handleRegistrationResponse(session: SessionData, message: Message
       reply_markup: { remove_keyboard: true },
     });
     await promptRegistrationStep(session);
+    return;
+  }
+
+  if (step.type === "country") {
+    await handleCountryInput(session, registration, text);
+    return;
+  }
+
+  if (step.type === "state") {
+    await handleStateInput(session, registration, text);
     return;
   }
 
@@ -734,7 +1032,12 @@ function formatProfile(profile: UserProfile, language: LanguageCode): string {
   if (incomeType) {
     lines.push(`• ${t(language, "profile.field_incomeType")}: ${incomeType}`);
   }
-  if (profile.state) lines.push(`• ${t(language, "profile.field_state")}: ${profile.state}`);
+  if (profile.country) {
+    lines.push(`• ${t(language, "profile.field_country")}: ${profile.country}`);
+  }
+  if (profile.stateRegion) {
+    lines.push(`• ${t(language, "profile.field_state_region")}: ${profile.stateRegion}`);
+  }
   if (profile.language) lines.push(t(language, "profile.current_language", { language: languageLabel(profile.language) }));
   return lines.join("\n");
 }
@@ -761,7 +1064,10 @@ async function showProfile(session: SessionData) {
             { text: t(session.language, "profile.field_incomeType"), callback_data: `${callbackPrefixes.profile}:EDIT:incomeType` },
           ],
           [
-            { text: t(session.language, "profile.field_state"), callback_data: `${callbackPrefixes.profile}:EDIT:state` },
+            {
+              text: t(session.language, "profile.field_state_region"),
+              callback_data: `${callbackPrefixes.profile}:EDIT:stateRegion`,
+            },
             { text: t(session.language, "menu.cancel"), callback_data: `${callbackPrefixes.profile}:CANCEL` },
           ],
         ],
@@ -804,13 +1110,12 @@ async function handleProfileEditInput(session: SessionData, message: Message) {
       return;
     }
     formattedValue = normalized;
-  } else if (inputType === "state") {
-    const normalizedState = value.toUpperCase();
-    if (!isValidState(normalizedState)) {
-      await bot.sendMessage(session.chatId, t(language, "profile.invalid_state"));
+  } else if (inputType === "stateRegion") {
+    if (!isValidStateRegion(value)) {
+      await bot.sendMessage(session.chatId, t(language, "profile.invalid_state_region"));
       return;
     }
-    formattedValue = normalizedState;
+    formattedValue = value;
   }
 
   const payload: Partial<UserProfile> = { [editField]: formattedValue } as Partial<UserProfile>;
@@ -1166,7 +1471,7 @@ async function handleCallbackQuery(callback: CallbackQuery) {
           } else {
             session.profileEditor = {
               editField: field,
-              inputType: field === "phone" ? "phone" : field === "state" ? "state" : "text",
+              inputType: field === "phone" ? "phone" : field === "stateRegion" ? "stateRegion" : "text",
             };
             sessionStore.update(session.chatId, session);
             await bot.sendMessage(
@@ -1262,6 +1567,7 @@ async function handleMessage(message: Message) {
 
 async function setupBot() {
   await ensureApiReachable();
+  startProfileSync();
 
   if (config.webhookUrl) {
     bot = new TelegramBot(config.botToken, { polling: false });

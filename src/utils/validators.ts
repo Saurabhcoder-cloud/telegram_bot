@@ -19,6 +19,10 @@ export function isValidPhone(phone: string): boolean {
   return digits.length >= 8 && digits.length <= 20;
 }
 
-export function isValidState(value: string): boolean {
-  return /^[A-Za-z]{2}$/.test(value.trim().toUpperCase());
+export function isValidStateRegion(value: string): boolean {
+  const normalized = value.trim();
+  if (normalized.length < 2 || normalized.length > 64) {
+    return false;
+  }
+  return /^[\p{L}\d][\p{L}\d\s.'\-&]{1,63}$/u.test(normalized);
 }

@@ -11,9 +11,10 @@ export interface RegistrationPayload {
   email: string;
   phone: string;
   dob: string;
+  country: string;
+  stateRegion: string;
   filingStatus: string;
   incomeType: string;
-  state: string;
   language: LanguageCode;
   telegramId: number;
 }
@@ -32,7 +33,8 @@ export interface UserProfile {
   dob?: string;
   filingStatus?: string;
   incomeType?: string;
-  state?: string;
+  country?: string;
+  stateRegion?: string;
   language: LanguageCode;
   onboardingComplete?: boolean;
   lastSyncedAt?: string;
@@ -42,6 +44,7 @@ export interface SessionRegistrationState {
   stepIndex: number;
   data: Partial<RegistrationPayload>;
   phoneVerified?: boolean;
+  stateRetryCount?: number;
 }
 
 export interface SessionLoginState {
@@ -77,7 +80,12 @@ export interface SessionReminderState {
 export interface SessionProfileState {
   editField?: keyof UserProfile;
   data?: Partial<UserProfile>;
-  inputType?: "text" | "phone" | "state";
+  inputType?: "text" | "phone" | "stateRegion";
+}
+
+export interface SessionUiState {
+  countryPage?: number;
+  statePage?: number;
 }
 
 export type SessionMode =
@@ -101,6 +109,7 @@ export interface SessionData {
   filing?: SessionFilingState;
   reminder?: SessionReminderState;
   profileEditor?: SessionProfileState;
+  ui?: SessionUiState;
   lastActivity?: number;
 }
 
