@@ -292,13 +292,16 @@ async function handleStartCommand(message: Message) {
       const client = createApiClient();
       const existing = await client.getProfileByTelegramId(session.telegramId);
       if (existing) {
-        session.jwt = existing.token;
-        session.profile = existing.user;
         session.language = existing.user.language;
-        session.mode = "idle";
+        session.mode = "login";
+        session.login = { stepIndex: 0 };
         sessionStore.update(session.chatId, session);
-        await bot.sendMessage(session.chatId, t(session.language, "registration.success_returning", { name: existing.user.fullName }));
-        await sendMainMenu(session);
+        await bot.sendMessage(
+          session.chatId,
+          t(session.language, "registration.success_returning", { name: existing.user.fullName }),
+        );
+        await bot.sendMessage(session.chatId, t(session.language, "auth.login_required"));
+        await promptLoginStep(session);
         return;
       }
     } catch (error) {
