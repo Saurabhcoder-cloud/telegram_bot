@@ -33,7 +33,7 @@ import {
 import { ApiError, createApiClient, isNetworkError } from "./services/apiClient";
 import { COUNTRIES, STATES } from "./data/locations";
 import { buildKeyboard, NAV_BACK, NAV_CANCEL, NAV_NEXT, NAV_PREV, paginate } from "./utils/keyboard";
-import { enqueueProfilePatch, startProfileSync } from "./utils/sync";
+import { enqueueProfilePatch, enqueueRegistration, startProfileSync } from "./utils/sync";
 
 const DEFAULT_LANGUAGE: LanguageCode = "en";
 
@@ -322,6 +322,7 @@ async function handleStartCommand(message: Message) {
     } as Partial<RegistrationPayload>,
     phoneVerified: false,
   };
+  session.pendingRegistration = undefined;
   sessionStore.update(session.chatId, session);
   await showLanguagePicker(session.chatId, language);
 }
@@ -664,6 +665,7 @@ async function finalizeRegistration(session: SessionData) {
     session.registration = undefined;
     session.mode = "idle";
     session.language = result.user.language;
+    session.pendingRegistration = undefined;
     sessionStore.update(session.chatId, session);
     await bot.sendMessage(session.chatId, t(session.language, "registration.completed"));
     await sendMainMenu(session);
@@ -678,11 +680,19 @@ async function finalizeRegistration(session: SessionData) {
       return;
     }
     if (isNetworkError(error)) {
-      registration.stepIndex = Math.max(0, registrationSteps.length - 1);
-      session.registration = registration;
-      sessionStore.update(session.chatId, session);
-      await bot.sendMessage(session.chatId, t(language, "error.network"));
-      await promptRegistrationStep(session);
+      enqueueRegistration(session.chatId, payload);
+      session.pendingRegistration = payload;
+      session.registration = undefined;
+      session.mode = "idle";
+      sessionStore.update(session.chatId, {
+        pendingRegistration: payload,
+        registration: undefined,
+        mode: "idle",
+      });
+      logger.warn("Queued registration due to network issue chatId=%d", session.chatId);
+      const messageKey = "registration.completed_offline";
+      await bot.sendMessage(session.chatId, t(language, messageKey));
+      await sendMainMenu(session);
       return;
     }
     logger.error("Registration error %o", error);

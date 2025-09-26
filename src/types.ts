@@ -103,6 +103,7 @@ export interface SessionData {
   language: LanguageCode;
   jwt?: string;
   profile?: UserProfile;
+  pendingRegistration?: RegistrationPayload;
   mode: SessionMode;
   registration?: SessionRegistrationState;
   login?: SessionLoginState;
