@@ -21,6 +21,7 @@ export class SessionStore {
       telegramId,
       language,
       mode: "idle",
+      disclaimerAcknowledged: false,
       lastActivity: Date.now(),
     };
     this.store.set(chatId, session);

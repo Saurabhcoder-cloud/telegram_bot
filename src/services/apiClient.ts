@@ -6,6 +6,10 @@ import {
   FilingData,
   LanguageCode,
   LoginPayload,
+  PlanCheckoutResponse,
+  PlanStatusResponse,
+  RefundEstimatePayload,
+  RefundEstimateResult,
   RegistrationPayload,
   UserProfile,
   AiResponse,
@@ -201,10 +205,28 @@ export class ApiClient {
     });
   }
 
+  async createPlanCheckout(plan: string): Promise<PlanCheckoutResponse> {
+    return this.request<PlanCheckoutResponse>("/payments/subscription", {
+      method: "POST",
+      body: JSON.stringify({ plan }),
+    });
+  }
+
+  async fetchPlanStatus(): Promise<PlanStatusResponse> {
+    return this.request<PlanStatusResponse>("/payments/status", { method: "GET" });
+  }
+
   async askAi(question: string, language: LanguageCode): Promise<AiResponse> {
     return this.request<AiResponse>("/ai/query", {
       method: "POST",
       body: JSON.stringify({ question, language }),
+    });
+  }
+
+  async estimateRefund(payload: RefundEstimatePayload): Promise<RefundEstimateResult> {
+    return this.request<RefundEstimateResult>("/tax/estimate", {
+      method: "POST",
+      body: JSON.stringify(payload),
     });
   }
 

@@ -79,6 +79,29 @@ export interface SessionProfileState {
   data?: Partial<UserProfile>;
 }
 
+export interface RefundEstimatePayload {
+  filingStatus: string;
+  dependents: number;
+  annualIncome: number;
+}
+
+export interface RefundEstimateResult {
+  refundAmount?: number;
+  taxDue?: number;
+  summary?: string;
+  downloadUrl?: string;
+  currency?: string;
+}
+
+export interface SessionEstimatorState {
+  stepIndex: number;
+  data: Partial<RefundEstimatePayload>;
+}
+
+export interface SessionSubscriptionState {
+  requiredPlan?: string;
+}
+
 export type SessionMode =
   | "idle"
   | "registration"
@@ -86,7 +109,9 @@ export type SessionMode =
   | "filing"
   | "ai"
   | "profile"
-  | "reminder";
+  | "reminder"
+  | "estimator"
+  | "subscription";
 
 export interface SessionData {
   chatId: number;
@@ -100,6 +125,9 @@ export interface SessionData {
   filing?: SessionFilingState;
   reminder?: SessionReminderState;
   profileEditor?: SessionProfileState;
+  estimator?: SessionEstimatorState;
+  subscription?: SessionSubscriptionState;
+  disclaimerAcknowledged?: boolean;
   lastActivity?: number;
 }
 
@@ -119,4 +147,17 @@ export interface ApiTaxForm {
 export interface AiResponse {
   answer: string;
   references?: string[];
+}
+
+export interface PlanStatusResponse {
+  plan: string;
+  tier: "free" | "standard" | "pro" | "premium";
+  requiresUpgrade: boolean;
+  missingFeature?: string;
+}
+
+export interface PlanCheckoutResponse {
+  checkoutUrl: string;
+  plan: string;
+  tier: "standard" | "pro" | "premium";
 }
