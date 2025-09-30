@@ -48,6 +48,7 @@ export interface SessionLoginState {
   stepIndex: number;
   email?: string;
   password?: string;
+  greetingName?: string;
 }
 
 export interface FilingData {
@@ -102,8 +103,11 @@ export interface SessionSubscriptionState {
   requiredPlan?: string;
 }
 
+export type PendingDisclaimerAction = "showMenu" | "startRegistration" | "promptLogin";
+
 export type SessionMode =
   | "idle"
+  | "disclaimer"
   | "registration"
   | "login"
   | "filing"
@@ -128,6 +132,7 @@ export interface SessionData {
   estimator?: SessionEstimatorState;
   subscription?: SessionSubscriptionState;
   disclaimerAcknowledged?: boolean;
+  pendingAfterDisclaimer?: PendingDisclaimerAction;
   lastActivity?: number;
 }
 

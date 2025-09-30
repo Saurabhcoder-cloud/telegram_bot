@@ -7,6 +7,7 @@ import { sessionStore } from "./session";
 import {
   FilingData,
   LanguageCode,
+  PendingDisclaimerAction,
   RefundEstimatePayload,
   RegistrationPayload,
   SessionData,
@@ -147,13 +148,125 @@ function formatCurrency(language: LanguageCode, amount: number, currency = "USD"
   }
 }
 
-async function sendDisclaimer(session: SessionData) {
+const DISCLAIMER_ACK_WORDS: Record<LanguageCode, string[]> = {
+  en: ["continue"],
+  es: ["continuar", "continue"],
+  ru: ["продолжить", "continue"],
+  zh: ["继续", "繼續", "continue"],
+  ar: ["استمرار", "continue"],
+  fa: ["ادامه", "continue"],
+};
+
+const ALL_ACK_WORDS = Array.from(
+  new Set(
+    Object.values(DISCLAIMER_ACK_WORDS)
+      .flat()
+      .map((word) => word.toLocaleLowerCase())
+  )
+);
+
+const QUOTE_TRIM_REGEX = /^["'“”«»„‟‹›「」『』]+|["'“”«»„‟‹›「」『』]+$/gu;
+const EDGE_PUNCTUATION_REGEX = /^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$/gu;
+
+function getPrimaryAckWord(language: LanguageCode): string {
+  const words = DISCLAIMER_ACK_WORDS[language];
+  if (words && words.length > 0) {
+    return words[0];
+  }
+  return DISCLAIMER_ACK_WORDS.en[0];
+}
+
+function buildAckCandidates(text: string): string[] {
+  const trimmed = text.trim().toLocaleLowerCase();
+  if (!trimmed) return [];
+  const noQuotes = trimmed.replace(QUOTE_TRIM_REGEX, "");
+  const noEdgePunctuation = noQuotes.replace(EDGE_PUNCTUATION_REGEX, "");
+  const candidates = new Set<string>([trimmed, noQuotes, noEdgePunctuation]);
+  for (const token of noQuotes.split(/\s+/)) {
+    const cleaned = token.replace(EDGE_PUNCTUATION_REGEX, "");
+    if (cleaned) {
+      candidates.add(cleaned);
+    }
+  }
+  return Array.from(candidates.values());
+}
+
+function isDisclaimerAcknowledgement(text: string): boolean {
+  return buildAckCandidates(text).some((candidate) => ALL_ACK_WORDS.includes(candidate));
+}
+
+async function handlePostDisclaimerAction(
+  session: SessionData,
+  action?: PendingDisclaimerAction
+): Promise<void> {
+  const nextAction = action ?? session.pendingAfterDisclaimer;
+  session.pendingAfterDisclaimer = undefined;
+  if (!nextAction) {
+    session.mode = "idle";
+    sessionStore.update(session.chatId, session);
+    return;
+  }
+
+  switch (nextAction) {
+    case "showMenu": {
+      session.mode = "idle";
+      sessionStore.update(session.chatId, session);
+      await sendMainMenu(session);
+      break;
+    }
+    case "startRegistration": {
+      if (!session.registration) {
+        session.registration = {
+          stepIndex: 0,
+          data: { telegramId: session.telegramId, language: session.language } as Partial<RegistrationPayload>,
+        };
+      }
+      session.mode = "registration";
+      sessionStore.update(session.chatId, session);
+      await bot.sendMessage(session.chatId, t(session.language, "registration.intro"));
+      await promptRegistrationStep(session);
+      break;
+    }
+    case "promptLogin": {
+      if (!session.login) {
+        session.login = { stepIndex: 0 };
+      }
+      session.mode = "login";
+      sessionStore.update(session.chatId, session);
+      if (session.login?.greetingName) {
+        await bot.sendMessage(
+          session.chatId,
+          t(session.language, "login.prompt_returning", { name: session.login.greetingName })
+        );
+      }
+      await promptLoginStep(session);
+      break;
+    }
+    default: {
+      session.mode = "idle";
+      sessionStore.update(session.chatId, session);
+    }
+  }
+}
+
+async function sendDisclaimer(session: SessionData, nextAction: PendingDisclaimerAction) {
+  if (session.disclaimerAcknowledged) {
+    await handlePostDisclaimerAction(session, nextAction);
+    return;
+  }
+
+  if (session.mode === "disclaimer" && session.pendingAfterDisclaimer === nextAction) {
+    return;
+  }
+
   const language = getLanguage(session);
   const title = t(language, "start.disclaimer_title");
   const body = t(language, "start.disclaimer_body");
   await bot.sendMessage(session.chatId, `${title}\n${body}`);
   await bot.sendMessage(session.chatId, t(language, "start.disclaimer_cta"));
-  session.disclaimerAcknowledged = true;
+  session.pendingAfterDisclaimer = nextAction;
+  session.disclaimerAcknowledged = false;
+  session.mode = "disclaimer";
   sessionStore.update(session.chatId, session);
 }
 
@@ -205,10 +318,7 @@ async function handleStartCommand(message: Message) {
   await bot.sendMessage(session.chatId, t(language, "start.welcome"));
 
   if (session.jwt) {
-    if (!session.disclaimerAcknowledged) {
-      await sendDisclaimer(session);
-    }
-    await sendMainMenu(session);
+    await sendDisclaimer(session, "showMenu");
     return;
   }
 
@@ -223,14 +333,9 @@ async function handleStartCommand(message: Message) {
         session.mode = "login";
         session.registration = undefined;
         session.disclaimerAcknowledged = false;
-        session.login = { stepIndex: 0 };
+        session.login = { stepIndex: 0, greetingName: existing.user.fullName };
         sessionStore.update(session.chatId, session);
-        await sendDisclaimer(session);
-        await bot.sendMessage(
-          session.chatId,
-          t(session.language, "login.prompt_returning", { name: existing.user.fullName })
-        );
-        await promptLoginStep(session);
+        await sendDisclaimer(session, "promptLogin");
         return;
       }
     } catch (error) {
@@ -1015,6 +1120,7 @@ function resetToMainMenu(session: SessionData) {
   session.reminder = undefined;
   session.estimator = undefined;
   session.subscription = undefined;
+  session.pendingAfterDisclaimer = undefined;
   sessionStore.update(session.chatId, session);
 }
 
@@ -1041,27 +1147,20 @@ async function handleCallbackQuery(callback: CallbackQuery) {
           } catch (error) {
             logger.warn("Language update API error %o", error);
           }
-          if (!session.disclaimerAcknowledged) {
-            await sendDisclaimer(session);
-          }
           await bot.sendMessage(session.chatId, t(language, "language.updated", { language: languageLabel(language) }));
-          await sendMainMenu(session);
+          await sendDisclaimer(session, "showMenu");
         } else {
           if (session.registration) {
             session.registration.data.language = language;
+            session.registration.stepIndex = 0;
           }
-          if (!session.disclaimerAcknowledged) {
-            await sendDisclaimer(session);
-          }
-          await bot.sendMessage(session.chatId, t(language, "registration.intro"));
           session.registration = session.registration ?? {
             stepIndex: 0,
             data: { telegramId: session.telegramId, language } as Partial<RegistrationPayload>,
           };
-          session.registration.stepIndex = 0;
           session.mode = "registration";
           sessionStore.update(session.chatId, session);
-          await promptRegistrationStep(session);
+          await sendDisclaimer(session, "startRegistration");
         }
         break;
       }
@@ -1226,6 +1325,26 @@ async function handleMessage(message: Message) {
   const hasText = Boolean(message.text && message.text.trim().length > 0);
   const hasContact = Boolean(messageWithContact.contact);
   if (!hasText && !hasContact) return;
+
+  if (
+    session.mode === "disclaimer" ||
+    (!session.disclaimerAcknowledged && Boolean(session.pendingAfterDisclaimer))
+  ) {
+    if (!hasText || !message.text) {
+      return;
+    }
+    if (isDisclaimerAcknowledgement(message.text)) {
+      session.disclaimerAcknowledged = true;
+      session.mode = "idle";
+      sessionStore.update(session.chatId, session);
+      await bot.sendMessage(session.chatId, t(session.language, "start.disclaimer_confirmed"));
+      await handlePostDisclaimerAction(session);
+    } else {
+      const keyword = getPrimaryAckWord(session.language);
+      await bot.sendMessage(session.chatId, t(session.language, "start.disclaimer_retry", { keyword }));
+    }
+    return;
+  }
 
   switch (session.mode) {
     case "registration":

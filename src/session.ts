@@ -22,6 +22,7 @@ export class SessionStore {
       language,
       mode: "idle",
       disclaimerAcknowledged: false,
+      pendingAfterDisclaimer: undefined,
       lastActivity: Date.now(),
     };
     this.store.set(chatId, session);
