@@ -280,6 +280,27 @@ async function sendMainMenu(session: SessionData) {
   });
 }
 
+async function ensureAuthenticated(session: SessionData): Promise<string | null> {
+  if (session.jwt) {
+    return session.jwt;
+  }
+
+  const language = getLanguage(session);
+  if (session.mode !== "login") {
+    session.mode = "login";
+    session.login = session.login ?? { stepIndex: 0 };
+    sessionStore.update(session.chatId, session);
+    await bot.sendMessage(session.chatId, t(language, "auth.login_required"));
+  } else {
+    session.login = session.login ?? { stepIndex: 0 };
+    sessionStore.update(session.chatId, session);
+    await bot.sendMessage(session.chatId, t(language, "auth.login_required"));
+  }
+
+  await promptLoginStep(session);
+  return null;
+}
+
 async function handleStartCommand(message: Message) {
   const session = ensureSession(message);
   if (!session) return;
@@ -852,11 +873,11 @@ async function handleLoginResponse(session: SessionData, message: Message) {
 }
 
 async function startFilingWizard(session: SessionData) {
-  if (!session.jwt) {
-    await bot.sendMessage(session.chatId, t(getLanguage(session), "error.generic"));
+  const token = session.jwt ?? (await ensureAuthenticated(session));
+  if (!token) {
     return;
   }
-  const client = createApiClient(session.jwt);
+  const client = createApiClient(token);
   try {
     const response = await client.startOrResumeFiling();
     session.mode = "filing";
@@ -1056,11 +1077,13 @@ function formatProfile(profile: UserProfile, language: LanguageCode): string {
 }
 
 async function showProfile(session: SessionData) {
-  if (!session.jwt) {
-    await bot.sendMessage(session.chatId, t(session.language, "error.generic"));
+  const token = session.jwt ?? (await ensureAuthenticated(session));
+  if (!token) {
     return;
   }
-  const client = createApiClient(session.jwt);
+  session.mode = "profile";
+  sessionStore.update(session.chatId, session);
+  const client = createApiClient(token);
   try {
     const profile = await client.fetchProfile();
     session.profile = profile;
@@ -1152,11 +1175,11 @@ async function handleProfileEditInput(session: SessionData, message: Message) {
 }
 
 async function listTaxForms(session: SessionData) {
-  if (!session.jwt) {
-    await bot.sendMessage(session.chatId, t(session.language, "error.generic"));
+  const token = session.jwt ?? (await ensureAuthenticated(session));
+  if (!token) {
     return;
   }
-  const client = createApiClient(session.jwt);
+  const client = createApiClient(token);
   try {
     const forms = await client.listTaxForms();
     if (forms.length === 0) {
@@ -1194,8 +1217,11 @@ async function listTaxForms(session: SessionData) {
 }
 
 async function downloadPdf(session: SessionData, formId: string) {
-  if (!session.jwt) return;
-  const client = createApiClient(session.jwt);
+  const token = session.jwt ?? (await ensureAuthenticated(session));
+  if (!token) {
+    return;
+  }
+  const client = createApiClient(token);
   await bot.sendMessage(session.chatId, t(session.language, "pdf.preparing"));
   try {
     const blob = await client.downloadTaxForm(formId);
@@ -1213,8 +1239,11 @@ async function downloadPdf(session: SessionData, formId: string) {
 }
 
 async function createPayment(session: SessionData) {
-  if (!session.jwt) return;
-  const client = createApiClient(session.jwt);
+  const token = session.jwt ?? (await ensureAuthenticated(session));
+  if (!token) {
+    return;
+  }
+  const client = createApiClient(token);
   await bot.sendMessage(session.chatId, t(session.language, "payment.creating"));
   try {
     const result = await client.createPaymentSession();
@@ -1234,11 +1263,8 @@ async function createPayment(session: SessionData) {
 }
 
 async function startReminderFlow(session: SessionData) {
-  if (!session.jwt) {
-    await bot.sendMessage(session.chatId, t(session.language, "auth.login_required"));
-    session.mode = "idle";
-    sessionStore.update(session.chatId, session);
-    await sendMainMenu(session);
+  const token = session.jwt ?? (await ensureAuthenticated(session));
+  if (!token) {
     return;
   }
   session.mode = "reminder";
@@ -1398,6 +1424,9 @@ async function handleCallbackQuery(callback: CallbackQuery) {
             await createPayment(session);
             break;
           case "ASK_AI":
+            if (!(session.jwt ?? (await ensureAuthenticated(session)))) {
+              break;
+            }
             session.mode = "ai";
             sessionStore.update(session.chatId, session);
             await bot.sendMessage(session.chatId, t(session.language, "ai.prompt"));
@@ -1406,8 +1435,6 @@ async function handleCallbackQuery(callback: CallbackQuery) {
             await showLanguagePicker(session.chatId, session.language);
             break;
           case "PROFILE":
-            session.mode = "profile";
-            sessionStore.update(session.chatId, session);
             await showProfile(session);
             break;
           case "REMINDERS":
