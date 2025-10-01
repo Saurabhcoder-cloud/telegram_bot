@@ -140,6 +140,9 @@ async function sendMainMenu(session: SessionData) {
       { text: t(language, "menu.change_language"), callback_data: `${callbackPrefixes.menu}:CHANGE_LANGUAGE` },
     ],
     [
+      { text: t(language, "menu.workflow"), callback_data: `${callbackPrefixes.menu}:WORKFLOW` },
+    ],
+    [
       { text: t(language, "menu.profile"), callback_data: `${callbackPrefixes.menu}:PROFILE` },
       { text: t(language, "menu.reminders"), callback_data: `${callbackPrefixes.menu}:REMINDERS` },
     ],
@@ -147,6 +150,30 @@ async function sendMainMenu(session: SessionData) {
   await bot.sendMessage(session.chatId, t(language, "menu.title"), {
     reply_markup: { inline_keyboard },
   });
+}
+
+async function sendWorkflowOverview(session: SessionData) {
+  const language = getLanguage(session);
+  const parts = [
+    `🚀 ${t(language, "workflow.title")}`,
+    `${t(language, "workflow.user_flow_title")}\n${t(language, "workflow.user_flow_body")}`,
+    `${t(language, "workflow.core_title")}\n${t(language, "workflow.core_body")}`,
+    `${t(language, "workflow.steps_title")}\n${t(language, "workflow.steps_body")}`,
+    `${t(language, "workflow.enhancements_title")}\n${t(language, "workflow.enhancements_body")}`,
+    `${t(language, "workflow.api_title")}\n${t(language, "workflow.api_body")}`,
+  ];
+
+  const groups = [
+    parts.slice(0, 3),
+    parts.slice(3, 4),
+    parts.slice(4),
+  ];
+
+  for (const group of groups) {
+    const text = group.filter(Boolean).join("\n\n").trim();
+    if (!text) continue;
+    await bot.sendMessage(session.chatId, text, { disable_web_page_preview: true });
+  }
 }
 
 async function handleStartCommand(message: Message) {
@@ -807,6 +834,9 @@ async function handleCallbackQuery(callback: CallbackQuery) {
             session.mode = "ai";
             sessionStore.update(session.chatId, session);
             await bot.sendMessage(session.chatId, t(session.language, "ai.prompt"));
+            break;
+          case "WORKFLOW":
+            await sendWorkflowOverview(session);
             break;
           case "CHANGE_LANGUAGE":
             await sendLanguageMenu(session.chatId, session.language);
