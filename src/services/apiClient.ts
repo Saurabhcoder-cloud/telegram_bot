@@ -1,14 +1,17 @@
 import { config } from "../config";
 import logger from "../logger";
 import {
+  AiResponse,
   ApiTaxForm,
   ApiUserResponse,
+  DocumentUploadRequest,
+  DocumentUploadResponse,
   FilingData,
+  FilingStageSummary,
   LanguageCode,
   LoginPayload,
   RegistrationPayload,
   UserProfile,
-  AiResponse,
 } from "../types";
 
 const DEFAULT_TIMEOUT_MS = 10_000;
@@ -439,6 +442,32 @@ export class ApiClient {
   async saveFilingStep(filingId: string, step: number, payload: Partial<FilingData>): Promise<FilingData> {
     return this.request<FilingData>(`/tax/filings/${filingId}/steps/${step}`, {
       method: "PUT",
+      body: JSON.stringify(payload),
+    });
+  }
+
+  async uploadTaxDocument(
+    filingId: string,
+    payload: DocumentUploadRequest,
+  ): Promise<DocumentUploadResponse> {
+    return this.request<DocumentUploadResponse>(`/tax/filings/${filingId}/documents`, {
+      method: "POST",
+      body: JSON.stringify(payload),
+    });
+  }
+
+  async fetchFilingStageSummary(filingId: string, stageId: string): Promise<FilingStageSummary> {
+    return this.request<FilingStageSummary>(`/tax/filings/${filingId}/stages/${stageId}`, {
+      method: "GET",
+    });
+  }
+
+  async recordRetentionConsent(
+    filingId: string,
+    payload: { consent: boolean; notes?: string },
+  ): Promise<{ status: string }> {
+    return this.request<{ status: string }>(`/tax/filings/${filingId}/consent`, {
+      method: "POST",
       body: JSON.stringify(payload),
     });
   }

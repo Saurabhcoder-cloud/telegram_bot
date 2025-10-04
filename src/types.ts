@@ -53,7 +53,28 @@ export interface SessionLoginState {
   password?: string;
 }
 
+export interface FilingDocument {
+  fileId: string;
+  fileName?: string;
+  fileUniqueId?: string;
+  mimeType?: string;
+  documentId?: string;
+  status?: "uploaded" | "processing" | "processed" | "failed";
+  classification?: string;
+  ocrSummary?: string;
+  uploadedAt?: string;
+}
+
 export interface FilingData {
+  documents?: FilingDocument[];
+  validationNotes?: string;
+  adaptiveResponses?: string;
+  benefitsNotes?: string;
+  reviewFeedback?: string;
+  exportPreference?: string;
+  retentionConsent?: "accept" | "decline";
+  consentNotes?: string;
+  // legacy fields retained for compatibility with previously saved drafts
   w2Income?: string;
   form1099Income?: string;
   scheduleCDetails?: string;
@@ -70,6 +91,30 @@ export interface SessionFilingState {
   totalSteps: number;
   data: FilingData;
   summaryMessageId?: number;
+  awaitingDocument?: boolean;
+}
+
+export interface DocumentUploadRequest {
+  fileId: string;
+  fileName?: string;
+  mimeType?: string;
+  fileUniqueId?: string;
+}
+
+export interface DocumentUploadResponse {
+  documentId: string;
+  classification?: string;
+  status: string;
+  ocrSummary?: string;
+}
+
+export interface FilingStageSummary {
+  stageId: string;
+  status: "pending" | "processing" | "completed" | "queued";
+  headline?: string;
+  summary: string;
+  highlights?: string[];
+  nextSteps?: string[];
 }
 
 export interface SessionReminderState {

@@ -12,6 +12,8 @@ import { LANGUAGES, languageLabel, t } from "./i18n";
 import { sessionStore } from "./session";
 import {
   FilingData,
+  FilingDocument,
+  FilingStageSummary,
   LanguageCode,
   RegistrationPayload,
   SessionData,
@@ -56,11 +58,37 @@ type MessageWithMarkup = Message & {
   reply_markup?: { inline_keyboard?: InlineKeyboardButton[][] };
 };
 
-type FilingStep = {
-  field: keyof FilingData;
+type FilingStepBase = {
+  id: string;
   promptKey: string;
   optional?: boolean;
 };
+
+type FilingTextField = "validationNotes" | "adaptiveResponses" | "benefitsNotes" | "reviewFeedback";
+type FilingChoiceField = "retentionConsent";
+
+type FilingDocumentStep = FilingStepBase & {
+  type: "document";
+};
+
+type FilingAutoStep = FilingStepBase & {
+  type: "auto";
+  successKey?: string;
+};
+
+type FilingTextStep = FilingStepBase & {
+  type: "text";
+  field: FilingTextField;
+};
+
+type FilingChoiceStep = FilingStepBase & {
+  type: "choice";
+  field: FilingChoiceField;
+  yesKey: string;
+  noKey: string;
+};
+
+type FilingStep = FilingDocumentStep | FilingAutoStep | FilingTextStep | FilingChoiceStep;
 
 type LoginStep = {
   field: "email" | "password";
@@ -97,14 +125,28 @@ function findRegistrationStepIndex(field: RegistrationField): number {
 }
 
 const filingSteps: FilingStep[] = [
-  { field: "w2Income", promptKey: "filing.prompt_w2" },
-  { field: "form1099Income", promptKey: "filing.prompt_1099" },
-  { field: "scheduleCDetails", promptKey: "filing.prompt_schedule_c" },
-  { field: "deductions", promptKey: "filing.prompt_deductions" },
-  { field: "dependents", promptKey: "filing.prompt_dependents" },
-  { field: "educationCredits", promptKey: "filing.prompt_education", optional: true },
-  { field: "medicalExpenses", promptKey: "filing.prompt_medical", optional: true },
-  { field: "mileage", promptKey: "filing.prompt_mileage", optional: true },
+  { id: "documents", type: "document", promptKey: "filing.prompt_documents" },
+  { id: "ocr", type: "auto", promptKey: "filing.prompt_ocr", successKey: "filing.auto_ocr_complete" },
+  { id: "validation", type: "text", field: "validationNotes", promptKey: "filing.prompt_validation" },
+  {
+    id: "adaptive",
+    type: "text",
+    field: "adaptiveResponses",
+    promptKey: "filing.prompt_adaptive",
+    optional: true,
+  },
+  { id: "benefits", type: "text", field: "benefitsNotes", promptKey: "filing.prompt_benefits" },
+  { id: "tax_engine", type: "auto", promptKey: "filing.prompt_tax_engine", successKey: "filing.auto_tax_complete" },
+  { id: "draft", type: "auto", promptKey: "filing.prompt_draft", successKey: "filing.auto_draft_complete" },
+  { id: "review", type: "text", field: "reviewFeedback", promptKey: "filing.prompt_review" },
+  {
+    id: "consent",
+    type: "choice",
+    field: "retentionConsent",
+    promptKey: "filing.prompt_consent",
+    yesKey: "filing.consent_yes",
+    noKey: "filing.consent_no",
+  },
 ];
 
 const loginSteps: LoginStep[] = [
@@ -887,6 +929,7 @@ async function startFilingWizard(session: SessionData) {
       totalSteps: filingSteps.length,
       data: response.data ?? {},
     };
+    session.filing.data.documents = session.filing.data.documents ?? [];
     sessionStore.update(session.chatId, session);
     if (response.step && response.step < filingSteps.length) {
       await bot.sendMessage(session.chatId, t(session.language, "filing.resume_prompt"));
@@ -913,50 +956,144 @@ async function promptFilingStep(session: SessionData) {
     return;
   }
   const language = session.language;
-  const buttons: InlineKeyboardButton[][] = [
-    [
-      { text: t(language, "menu.cancel"), callback_data: `${callbackPrefixes.filing}:CANCEL` },
-    ],
-  ];
-  if (filing.stepIndex > 0) {
-    buttons[0].unshift({
-      text: t(language, "menu.back"),
-      callback_data: `${callbackPrefixes.filing}:BACK`,
-    });
+  const progress = t(language, "filing.step_progress", {
+    current: filing.stepIndex + 1,
+    total: filing.totalSteps,
+  });
+
+  if (step.type === "auto") {
+    await bot.sendMessage(session.chatId, `${progress}\n\n${t(language, step.promptKey)}`);
+    await handleAutoFilingStage(session, step);
+    return;
   }
-  if (step.optional) {
-    buttons.push([
+
+  const inline_keyboard: InlineKeyboardButton[][] = [];
+  const navigationRow: InlineKeyboardButton[] = [];
+  if (filing.stepIndex > 0) {
+    navigationRow.push({ text: t(language, "menu.back"), callback_data: `${callbackPrefixes.filing}:BACK` });
+  }
+  navigationRow.push({ text: t(language, "menu.cancel"), callback_data: `${callbackPrefixes.filing}:CANCEL` });
+  if (navigationRow.length > 0) {
+    inline_keyboard.push(navigationRow);
+  }
+
+  if (step.type === "text" && step.optional) {
+    inline_keyboard.push([
       {
         text: t(language, "registration.optional_skip"),
         callback_data: `${callbackPrefixes.filing}:SKIP`,
       },
     ]);
   }
-  const progress = t(language, "filing.step_progress", {
-    current: filing.stepIndex + 1,
-    total: filing.totalSteps,
-  });
+
+  if (step.type === "choice") {
+    inline_keyboard.unshift([
+      {
+        text: t(language, step.yesKey),
+        callback_data: `${callbackPrefixes.filing}:CHOICE:${step.field}:accept`,
+      },
+      {
+        text: t(language, step.noKey),
+        callback_data: `${callbackPrefixes.filing}:CHOICE:${step.field}:decline`,
+      },
+    ]);
+  }
+
+  if (step.type === "document") {
+    filing.awaitingDocument = true;
+    session.filing = filing;
+    sessionStore.update(session.chatId, session);
+    await bot.sendMessage(session.chatId, `${progress}\n\n${t(language, step.promptKey)}`, {
+      reply_markup: inline_keyboard.length ? { inline_keyboard } : undefined,
+    });
+    return;
+  }
+
+  filing.awaitingDocument = false;
+  session.filing = filing;
+  sessionStore.update(session.chatId, session);
+
   await bot.sendMessage(session.chatId, `${progress}\n\n${t(language, step.promptKey)}`, {
-    reply_markup: { inline_keyboard: buttons },
+    reply_markup: inline_keyboard.length ? { inline_keyboard } : undefined,
   });
 }
 
-async function handleFilingResponse(session: SessionData, message: Message) {
+async function handleAutoFilingStage(session: SessionData, step: FilingAutoStep) {
   const filing = session.filing;
-  if (!filing || !message.text) return;
+  if (!filing) return;
+  const language = session.language;
+
+  if (!session.jwt || !filing.filingId) {
+    await bot.sendMessage(session.chatId, t(language, "filing.auto_offline"));
+  } else {
+    const client = createApiClient(session.jwt);
+    try {
+      const snapshot = await client.fetchFilingStageSummary(filing.filingId, step.id);
+      const lines: string[] = [];
+      if (snapshot.headline) {
+        lines.push(snapshot.headline);
+      }
+      lines.push(snapshot.summary);
+      if (snapshot.highlights && snapshot.highlights.length > 0) {
+        lines.push("\n" + t(language, "filing.auto_highlights"));
+        for (const highlight of snapshot.highlights) {
+          lines.push(`• ${highlight}`);
+        }
+      }
+      if (snapshot.nextSteps && snapshot.nextSteps.length > 0) {
+        lines.push("\n" + t(language, "filing.auto_next_steps"));
+        for (const next of snapshot.nextSteps) {
+          lines.push(`• ${next}`);
+        }
+      }
+      if (step.successKey) {
+        lines.push("\n" + t(language, step.successKey));
+      }
+      await bot.sendMessage(session.chatId, lines.join("\n"));
+    } catch (error) {
+      if (isNetworkError(error)) {
+        await bot.sendMessage(session.chatId, t(language, "filing.auto_offline"));
+      } else {
+        logger.error("Auto filing stage error %o", error);
+        await bot.sendMessage(session.chatId, t(language, "error.generic"));
+      }
+    }
+  }
+
+  filing.stepIndex += 1;
+  session.filing = filing;
+  sessionStore.update(session.chatId, session);
+  await promptFilingStep(session);
+}
+
+async function handleFilingMessage(session: SessionData, message: Message) {
+  const filing = session.filing;
+  if (!filing) return;
   const step = filingSteps[filing.stepIndex];
   if (!step) return;
   const language = session.language;
-  const text = message.text.trim();
+
+  if (step.type === "auto" || step.type === "choice") {
+    // Ignore stray messages while waiting for automated or choice callbacks
+    return;
+  }
+
+  if (step.type === "document") {
+    await handleDocumentMessage(session, message, step);
+    return;
+  }
+
+  const text = message.text?.trim();
   if (!text) {
     await bot.sendMessage(session.chatId, t(language, "error.generic"));
     return;
   }
+
   filing.data[step.field] = text;
   try {
-    const client = createApiClient(session.jwt);
-    if (session.jwt) {
-      await client.saveFilingStep(filing.filingId!, filing.stepIndex, { [step.field]: text } as Partial<FilingData>);
+    if (session.jwt && filing.filingId) {
+      const client = createApiClient(session.jwt);
+      await client.saveFilingStep(filing.filingId, filing.stepIndex, { [step.field]: text } as Partial<FilingData>);
     }
     filing.stepIndex += 1;
     session.filing = filing;
@@ -973,22 +1110,157 @@ async function handleFilingResponse(session: SessionData, message: Message) {
   }
 }
 
+async function handleDocumentMessage(
+  session: SessionData,
+  message: Message,
+  _step: FilingDocumentStep,
+) {
+  const filing = session.filing;
+  if (!filing) return;
+  const language = session.language;
+  const typedMessage = message as Message & {
+    document?: {
+      file_id: string;
+      file_unique_id: string;
+      file_name?: string;
+      mime_type?: string;
+    };
+    photo?: {
+      file_id: string;
+      file_unique_id: string;
+      file_size?: number;
+      width?: number;
+      height?: number;
+    }[];
+  };
+  const uploadedDocument = typedMessage.document;
+  const uploadedPhoto = typedMessage.photo ? typedMessage.photo[typedMessage.photo.length - 1] : undefined;
+
+  if (!uploadedDocument && !uploadedPhoto) {
+    if (message.text) {
+      await bot.sendMessage(session.chatId, t(language, "filing.document_expected"));
+    }
+    return;
+  }
+
+  const fileId = (uploadedDocument ?? uploadedPhoto)!.file_id;
+  const fileUniqueId = (uploadedDocument ?? uploadedPhoto)!.file_unique_id;
+  const fileName =
+    uploadedDocument?.file_name ??
+    (uploadedPhoto ? t(language, "filing.document_photo_name") : t(language, "filing.document_default_name"));
+  const mimeType = uploadedDocument?.mime_type ?? (uploadedPhoto ? "image/jpeg" : undefined);
+
+  const record: FilingDocument = {
+    fileId,
+    fileName,
+    mimeType,
+    fileUniqueId,
+    status: "uploaded",
+    uploadedAt: new Date().toISOString(),
+  };
+
+  filing.data.documents = filing.data.documents ?? [];
+  filing.data.documents.push(record);
+
+  let acknowledgementKey: string = "filing.document_saved_offline";
+  let acknowledgementParams: Record<string, string> = { name: fileName };
+
+  if (session.jwt && filing.filingId) {
+    const client = createApiClient(session.jwt);
+    try {
+      const response = await client.uploadTaxDocument(filing.filingId, {
+        fileId,
+        fileName,
+        mimeType,
+        fileUniqueId,
+      });
+      record.documentId = response.documentId;
+      record.status = (response.status as FilingDocument["status"]) ?? "processing";
+      record.classification = response.classification;
+      record.ocrSummary = response.ocrSummary;
+      acknowledgementKey = "filing.document_saved_online";
+      acknowledgementParams = {
+        name: fileName,
+        status: response.status,
+        classification: response.classification ?? t(language, "filing.document_classification_pending"),
+      };
+    } catch (error) {
+      if (isNetworkError(error)) {
+        acknowledgementKey = "filing.document_saved_offline";
+      } else {
+        logger.error("Document upload error %o", error);
+        acknowledgementKey = "error.generic";
+      }
+    }
+  }
+
+  session.filing = filing;
+  sessionStore.update(session.chatId, session);
+
+  await bot.sendMessage(session.chatId, t(language, acknowledgementKey, acknowledgementParams));
+
+  if (acknowledgementKey === "error.generic") {
+    return;
+  }
+
+  filing.awaitingDocument = false;
+  filing.stepIndex += 1;
+  session.filing = filing;
+  sessionStore.update(session.chatId, session);
+  await promptFilingStep(session);
+}
+
 async function sendFilingSummary(session: SessionData) {
   const filing = session.filing;
   if (!filing) return;
   const language = session.language;
   const lines: string[] = [t(language, "filing.summary_review")];
-  for (const step of filingSteps) {
-    const label = t(language, step.promptKey);
-    const value = filing.data[step.field] ?? "—";
-    lines.push(`• ${label}: ${value}`);
+
+  const documents = filing.data.documents ?? [];
+  if (documents.length === 0) {
+    lines.push(`• ${t(language, "filing.summary_documents_empty")}`);
+  } else {
+    lines.push(t(language, "filing.summary_documents_header"));
+    for (const doc of documents) {
+      const statusLabel = doc.status ?? t(language, "filing.document_status_unknown");
+      const classification = doc.classification
+        ? ` – ${doc.classification}`
+        : "";
+      lines.push(`  • ${doc.fileName ?? t(language, "filing.document_default_name")} (${statusLabel}${classification})`);
+    }
   }
-  const keyboard: InlineKeyboardButton[][] = filingSteps.map((step) => [
-    {
-      text: t(language, "menu.back") + ` (${t(language, step.promptKey)})`,
-      callback_data: `${callbackPrefixes.filing}:EDIT:${step.field}`,
-    },
-  ]);
+
+  const keyboard: InlineKeyboardButton[][] = [];
+
+  for (const step of filingSteps) {
+    if (step.type === "text") {
+      const rawValue = filing.data[step.field] ?? "";
+      const display = rawValue.trim() ? rawValue : t(language, "filing.summary_missing");
+      lines.push(`• ${t(language, step.promptKey)}: ${display}`);
+      keyboard.push([
+        {
+          text: t(language, "filing.summary_edit", { section: t(language, step.promptKey) }),
+          callback_data: `${callbackPrefixes.filing}:EDIT:${step.field}`,
+        },
+      ]);
+    } else if (step.type === "choice") {
+      const value = filing.data[step.field];
+      let display = t(language, "filing.summary_missing");
+      if (value === "accept") {
+        display = t(language, step.yesKey);
+      } else if (value === "decline") {
+        display = t(language, step.noKey);
+      }
+      lines.push(`• ${t(language, step.promptKey)}: ${display}`);
+      keyboard.push([
+        {
+          text: t(language, "filing.summary_edit", { section: t(language, step.promptKey) }),
+          callback_data: `${callbackPrefixes.filing}:EDIT:${step.field}`,
+        },
+      ]);
+    }
+  }
+
   keyboard.push([
     { text: t(language, "filing.confirm_submit"), callback_data: `${callbackPrefixes.filing}:SUBMIT` },
   ]);
@@ -1461,15 +1733,17 @@ async function handleCallbackQuery(callback: CallbackQuery) {
           await sendMainMenu(session);
         } else if (action === "SKIP") {
           const step = filingSteps[session.filing.stepIndex];
-          if (step) {
+          if (step && step.type === "text") {
             session.filing.data[step.field] = "";
             session.filing.stepIndex += 1;
             sessionStore.update(session.chatId, session);
             await promptFilingStep(session);
           }
         } else if (action === "EDIT") {
-          const field = parts[1] as keyof FilingData;
-          const index = filingSteps.findIndex((step) => step.field === field);
+          const field = parts[1] as FilingTextField | FilingChoiceField;
+          const index = filingSteps.findIndex(
+            (step) => (step.type === "text" || step.type === "choice") && step.field === field,
+          );
           if (index >= 0) {
             session.filing.stepIndex = index;
             sessionStore.update(session.chatId, session);
@@ -1477,6 +1751,42 @@ async function handleCallbackQuery(callback: CallbackQuery) {
           }
         } else if (action === "SUBMIT") {
           await submitFiling(session);
+        } else if (action === "CHOICE") {
+          const field = parts[1] as FilingChoiceField;
+          const value = parts[2] as "accept" | "decline";
+          const currentStep = filingSteps[session.filing.stepIndex];
+          if (!currentStep || currentStep.type !== "choice" || currentStep.field !== field) {
+            break;
+          }
+          session.filing.data[field] = value;
+          try {
+            if (session.jwt && session.filing.filingId) {
+              const client = createApiClient(session.jwt);
+              await client.saveFilingStep(session.filing.filingId, session.filing.stepIndex, {
+                [field]: value,
+              } as Partial<FilingData>);
+              if (field === "retentionConsent") {
+                await client.recordRetentionConsent(session.filing.filingId, {
+                  consent: value === "accept",
+                });
+              }
+            }
+            await bot.sendMessage(
+              session.chatId,
+              t(session.language, value === "accept" ? currentStep.yesKey : currentStep.noKey),
+            );
+          } catch (error) {
+            if (isNetworkError(error)) {
+              await bot.sendMessage(session.chatId, t(session.language, "filing.choice_saved_offline"));
+            } else {
+              logger.error("Choice save error %o", error);
+              await bot.sendMessage(session.chatId, t(session.language, "error.generic"));
+              break;
+            }
+          }
+          session.filing.stepIndex += 1;
+          sessionStore.update(session.chatId, session);
+          await promptFilingStep(session);
         }
         break;
       }
@@ -1576,31 +1886,43 @@ async function handleCallbackQuery(callback: CallbackQuery) {
 }
 
 async function handleMessage(message: Message) {
-  if (!message.text || message.text.startsWith("/")) return;
+  if (message.text && message.text.startsWith("/")) return;
   const session = ensureSession(message);
   if (!session) return;
 
   switch (session.mode) {
     case "registration":
-      await handleRegistrationResponse(session, message);
+      if (message.text) {
+        await handleRegistrationResponse(session, message);
+      }
       break;
     case "login":
-      await handleLoginResponse(session, message);
+      if (message.text) {
+        await handleLoginResponse(session, message);
+      }
       break;
     case "filing":
-      await handleFilingResponse(session, message);
+      await handleFilingMessage(session, message);
       break;
     case "ai":
-      await handleAiQuestion(session, message);
+      if (message.text) {
+        await handleAiQuestion(session, message);
+      }
       break;
     case "profile":
-      await handleProfileEditInput(session, message);
+      if (message.text) {
+        await handleProfileEditInput(session, message);
+      }
       break;
     case "reminder":
-      await handleReminderInput(session, message);
+      if (message.text) {
+        await handleReminderInput(session, message);
+      }
       break;
     default:
-      await sendMainMenu(session);
+      if (message.text) {
+        await sendMainMenu(session);
+      }
       break;
   }
 }
@@ -1653,13 +1975,13 @@ async function setupBot() {
   ]);
 
   bot.onText(/^\/start$/, handleStartCommand);
-  bot.onText(/^\/menu$/, (msg) => {
+  bot.onText(/^\/menu$/, (msg: Message) => {
     const session = ensureSession(msg);
     if (!session) return;
     resetToMainMenu(session);
     sendMainMenu(session);
   });
-  bot.onText(/^\/help$/, (msg) => {
+  bot.onText(/^\/help$/, (msg: Message) => {
     const session = ensureSession(msg);
     if (!session) return;
     const language = getLanguage(session);
@@ -1669,7 +1991,7 @@ async function setupBot() {
     bot.sendMessage(session.chatId, help);
   });
 
-  bot.on("contact", async (msg) => {
+  bot.on("contact", async (msg: Message) => {
     const session = ensureSession(msg);
     if (!session) return;
     if (session.mode !== "registration") return;
@@ -1701,7 +2023,7 @@ async function setupBot() {
   bot.on("message", handleMessage);
   bot.on("callback_query", handleCallbackQuery);
 
-  bot.on("polling_error", (err) => {
+  bot.on("polling_error", (err: Error) => {
     logger.error("Polling error %o", err);
   });
 
