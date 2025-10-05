@@ -1,0 +1,20 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "allowJs": true,
+    "checkJs": false,
+    "jsx": "preserve",
+    "moduleResolution": "Bundler",
+    "module": "ESNext",
+    "noEmit": true,
+    "baseUrl": ".",
+    "paths": {
+      "@/lib/*": ["lib/*"],
+      "@/components/*": ["components/*"],
+      "@/styles/*": ["styles/*"],
+      "@/shared/*": ["../../packages/shared/src/*"]
+    }
+  },
+  "include": ["next-env.d.ts", "**/*.ts", "**/*.tsx"],
+  "exclude": ["node_modules"]
+}
