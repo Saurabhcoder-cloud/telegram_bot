@@ -10,11 +10,13 @@ for (const key of required) {
   }
 }
 
+const aiApiKey = process.env.AI_API_KEY ?? process.env.OPENAI_API_KEY ?? "";
+
 export const config = {
   botToken: process.env.BOT_TOKEN!,
   apiBaseUrl: process.env.API_BASE_URL!,
   stripePublishableKey: process.env.STRIPE_KEY ?? "",
-  aiApiKey: process.env.AI_API_KEY ?? "",
+  aiApiKey,
   aiModel: process.env.AI_MODEL ?? "gpt-4o-mini",
   aiBaseUrl: process.env.AI_BASE_URL ?? "https://api.openai.com/v1",
   adminChatId: process.env.ADMIN_CHAT_ID,

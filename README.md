@@ -77,6 +77,7 @@ pm2 start ecosystem.config.js
 | `API_BASE_URL` | Base URL for the TaxHelp AI REST API (HTTPS) |
 | `STRIPE_KEY` | Publishable key used for contextual messaging (backend handles checkout session creation) |
 | `AI_API_KEY` | OpenAI-compatible key used for direct AI fallback when the backend is unavailable |
+| `OPENAI_API_KEY` | Optional alias for `AI_API_KEY` to ease local setups |
 | `AI_MODEL` | Model identifier for the direct AI fallback (default `gpt-4o-mini`) |
 | `AI_BASE_URL` | Override the OpenAI-compatible base URL if using a proxy |
 | `ADMIN_CHAT_ID` | Optional Telegram chat ID for startup notifications |
@@ -84,6 +85,8 @@ pm2 start ecosystem.config.js
 | `WEBHOOK_SECRET` | Optional secret validated against `x-telegram-bot-api-secret-token` |
 | `PORT` | Webhook HTTP server port |
 | `BOT_NAME`, `BOT_VERSION`, `BOT_AUTHOR` | Metadata used in logs and admin notifications |
+
+Either `AI_API_KEY` or `OPENAI_API_KEY` must be populated with your provider secret to enable the multilingual “Ask a Tax Question” flow. The assistant automatically replies in the user’s chosen language when the key is present.
 
 ## 🔗 API integration cheatsheet
 The bot relies on TaxHelp AI’s REST API. Below are representative payloads used in the workflows.
