@@ -298,6 +298,26 @@ async function finalizeRegistration(session: SessionData) {
   const payload = registration.data as RegistrationPayload;
   payload.language = session.language;
   payload.telegramId = session.telegramId;
+
+  const requiredFieldChecks: { field: RegistrationField; messageKey: string }[] = [
+    { field: "phone", messageKey: "registration.missing_phone" },
+    { field: "password", messageKey: "registration.missing_password" },
+  ];
+
+  for (const { field, messageKey } of requiredFieldChecks) {
+    if (!payload[field]) {
+      const stepIndex = registrationSteps.findIndex((step) => step.field === field);
+      if (stepIndex >= 0) {
+        registration.stepIndex = stepIndex;
+        session.registration = registration;
+        sessionStore.update(session.chatId, session);
+      }
+      await bot.sendMessage(session.chatId, t(language, messageKey));
+      await promptRegistrationStep(session);
+      return;
+    }
+  }
+
   try {
     const client = createApiClient();
     const result = await client.register(payload);
