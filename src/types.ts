@@ -36,6 +36,8 @@ export interface UserProfile {
   language: LanguageCode;
   onboardingComplete?: boolean;
   lastSyncedAt?: string;
+  subscriptionPlan?: SubscriptionPlanId;
+  subscriptionStatus?: "trial" | "active" | "canceled" | "past_due" | "none";
 }
 
 export interface SessionRegistrationState {
@@ -78,6 +80,33 @@ export interface SessionProfileState {
   data?: Partial<UserProfile>;
 }
 
+export type SubscriptionPlanId = "free" | "standard" | "pro" | "premium";
+
+export interface RefundEstimateResult {
+  status: string;
+  dependents: number;
+  income: number;
+  taxableIncome: number;
+  estimatedTax: number;
+  credits: number;
+  withheld: number;
+  net: number;
+}
+
+export interface SessionEstimateState {
+  step: "status" | "dependents" | "income" | "result";
+  status?: string;
+  dependents?: number;
+  income?: number;
+  result?: RefundEstimateResult;
+}
+
+export interface SessionSubscriptionState {
+  planId?: SubscriptionPlanId;
+  awaitingConfirmation?: boolean;
+  checkoutUrl?: string;
+}
+
 export type SessionMode =
   | "idle"
   | "registration"
@@ -85,7 +114,9 @@ export type SessionMode =
   | "filing"
   | "ai"
   | "profile"
-  | "reminder";
+  | "reminder"
+  | "estimate"
+  | "subscription";
 
 export interface SessionData {
   chatId: number;
@@ -99,6 +130,8 @@ export interface SessionData {
   filing?: SessionFilingState;
   reminder?: SessionReminderState;
   profileEditor?: SessionProfileState;
+  estimate?: SessionEstimateState;
+  subscription?: SessionSubscriptionState;
   lastActivity?: number;
 }
 

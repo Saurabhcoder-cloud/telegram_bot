@@ -1,4 +1,4 @@
-import { LanguageCode } from "./types";
+import { LanguageCode, SubscriptionPlanId } from "./types";
 
 export const FILING_STATUSES = [
   { value: "single", labelKey: "Single" },
@@ -21,6 +21,61 @@ export const REMINDER_TYPES = [
   { value: "state_deadline", labelKey: "State filing deadline" },
   { value: "documents", labelKey: "Upload missing documents" },
   { value: "payment_due", labelKey: "Tax payment due" },
+];
+
+export const STANDARD_DEDUCTION: Record<string, number> = {
+  single: 13850,
+  married_joint: 27700,
+  married_separate: 13850,
+  head_household: 20800,
+  widow: 27700,
+};
+
+export const ESTIMATE_DEPENDENT_CREDIT = 2000;
+export const ESTIMATE_WITHHOLDING_RATE = 0.12;
+
+export interface SubscriptionPlan {
+  id: SubscriptionPlanId;
+  price: number;
+  currency: string;
+  labelKey: string;
+  detailsKey: string;
+  requiresPayment: boolean;
+}
+
+export const SUBSCRIPTION_PLANS: SubscriptionPlan[] = [
+  {
+    id: "free",
+    price: 0,
+    currency: "USD",
+    labelKey: "subscription.plan_label_free",
+    detailsKey: "subscription.plan_details_free",
+    requiresPayment: false,
+  },
+  {
+    id: "standard",
+    price: 9.99,
+    currency: "USD",
+    labelKey: "subscription.plan_label_standard",
+    detailsKey: "subscription.plan_details_standard",
+    requiresPayment: true,
+  },
+  {
+    id: "pro",
+    price: 19.99,
+    currency: "USD",
+    labelKey: "subscription.plan_label_pro",
+    detailsKey: "subscription.plan_details_pro",
+    requiresPayment: true,
+  },
+  {
+    id: "premium",
+    price: 24.99,
+    currency: "USD",
+    labelKey: "subscription.plan_label_premium",
+    detailsKey: "subscription.plan_details_premium",
+    requiresPayment: true,
+  },
 ];
 
 export function formatOptionLabel(language: LanguageCode, option: { value: string; labelKey: string }): string {

@@ -10,12 +10,18 @@ import {
   RegistrationPayload,
   SessionData,
   UserProfile,
+  RefundEstimateResult,
+  SubscriptionPlanId,
 } from "./types";
 import { isValidDate, isValidEmail, normalizePhone } from "./utils/validators";
 import {
   FILING_STATUSES,
   INCOME_TYPES,
   REMINDER_TYPES,
+  SUBSCRIPTION_PLANS,
+  ESTIMATE_DEPENDENT_CREDIT,
+  ESTIMATE_WITHHOLDING_RATE,
+  STANDARD_DEDUCTION,
   formatOptionLabel,
   formatStatus,
 } from "./constants";
@@ -88,6 +94,9 @@ const callbackPrefixes = {
   pdf: "PDF",
   profile: "PROFILE",
   reminder: "REMINDER",
+  estimate: "EST",
+  estimatePdf: "ESTPDF",
+  subscription: "SUB",
 };
 
 let bot: TelegramBot;
@@ -128,20 +137,24 @@ async function sendMainMenu(session: SessionData) {
   const language = getLanguage(session);
   const inline_keyboard = [
     [
-      { text: t(language, "menu.start_filing"), callback_data: `${callbackPrefixes.menu}:START_FILING` },
-      { text: t(language, "menu.view_forms"), callback_data: `${callbackPrefixes.menu}:VIEW_FORMS` },
+      {
+        text: t(language, "menu.ask_tax_question"),
+        callback_data: `${callbackPrefixes.menu}:ASK_TAX_QUESTION`,
+      },
+      {
+        text: t(language, "menu.estimate_refund"),
+        callback_data: `${callbackPrefixes.menu}:ESTIMATE_REFUND`,
+      },
     ],
     [
-      { text: t(language, "menu.download_pdf"), callback_data: `${callbackPrefixes.menu}:DOWNLOAD_PDF` },
-      { text: t(language, "menu.make_payment"), callback_data: `${callbackPrefixes.menu}:MAKE_PAYMENT` },
+      { text: t(language, "menu.file_taxes"), callback_data: `${callbackPrefixes.menu}:FILE_TAXES` },
+      { text: t(language, "menu.my_documents"), callback_data: `${callbackPrefixes.menu}:MY_DOCUMENTS` },
     ],
     [
-      { text: t(language, "menu.ask_ai"), callback_data: `${callbackPrefixes.menu}:ASK_AI` },
-      { text: t(language, "menu.change_language"), callback_data: `${callbackPrefixes.menu}:CHANGE_LANGUAGE` },
-    ],
-    [
-      { text: t(language, "menu.profile"), callback_data: `${callbackPrefixes.menu}:PROFILE` },
-      { text: t(language, "menu.reminders"), callback_data: `${callbackPrefixes.menu}:REMINDERS` },
+      {
+        text: t(language, "menu.subscription_plans"),
+        callback_data: `${callbackPrefixes.menu}:SUBSCRIPTION_PLANS`,
+      },
     ],
   ];
   await bot.sendMessage(session.chatId, t(language, "menu.title"), {
@@ -149,34 +162,53 @@ async function sendMainMenu(session: SessionData) {
   });
 }
 
-async function handleStartCommand(message: Message) {
-  const session = ensureSession(message);
-  if (!session) return;
+function getLocale(language: LanguageCode): string {
+  const match = LANGUAGES.find((lang) => lang.code === language);
+  return match?.locale ?? "en-US";
+}
 
-  const language = getLanguage(session);
-  await bot.sendMessage(session.chatId, t(language, "start.welcome"));
+function formatCurrency(language: LanguageCode, value: number): string {
+  return new Intl.NumberFormat(getLocale(language), {
+    style: "currency",
+    currency: "USD",
+  }).format(value);
+}
 
-  if (!session.jwt) {
-    try {
-      const client = createApiClient();
-      const existing = await client.getProfileByTelegramId(session.telegramId);
-      if (existing) {
-        session.jwt = existing.token;
-        session.profile = existing.user;
-        session.language = existing.user.language;
-        session.mode = "idle";
-        sessionStore.update(session.chatId, session);
-        await bot.sendMessage(session.chatId, t(session.language, "registration.success_returning", { name: existing.user.fullName }));
-        await sendMainMenu(session);
-        return;
-      }
-    } catch (error) {
-      if (error instanceof ApiError && error.status !== 404) {
-        logger.error("Failed to fetch profile by telegram id", error);
-      }
-    }
+function calculateRefundEstimate(status: string, dependents: number, income: number): RefundEstimateResult {
+  const deduction = STANDARD_DEDUCTION[status] ?? STANDARD_DEDUCTION.single;
+  const taxableIncome = Math.max(0, income - deduction);
+  let estimatedTax = 0;
+  if (taxableIncome <= 11000) {
+    estimatedTax = taxableIncome * 0.1;
+  } else if (taxableIncome <= 44725) {
+    estimatedTax = 1100 + (taxableIncome - 11000) * 0.12;
+  } else {
+    estimatedTax = 5147 + (taxableIncome - 44725) * 0.22;
   }
+  const credits = dependents * ESTIMATE_DEPENDENT_CREDIT;
+  const withheld = income * ESTIMATE_WITHHOLDING_RATE;
+  const net = withheld + credits - estimatedTax;
+  return { status, dependents, income, taxableIncome, estimatedTax, credits, withheld, net };
+}
 
+async function sendDisclaimer(session: SessionData) {
+  await bot.sendMessage(session.chatId, t(session.language, "start.disclaimer"));
+}
+
+function findSubscriptionPlan(planId: SubscriptionPlanId) {
+  return SUBSCRIPTION_PLANS.find((plan) => plan.id === planId);
+}
+
+function subscriptionPlanLabel(language: LanguageCode, planId: SubscriptionPlanId): string {
+  const plan = findSubscriptionPlan(planId);
+  return plan ? t(language, plan.labelKey) : planId;
+}
+
+async function beginRegistration(session: SessionData, messageKey?: string) {
+  const language = getLanguage(session);
+  if (messageKey) {
+    await bot.sendMessage(session.chatId, t(language, messageKey));
+  }
   session.mode = "registration";
   session.registration = {
     stepIndex: 0,
@@ -186,6 +218,38 @@ async function handleStartCommand(message: Message) {
     } as Partial<RegistrationPayload>,
   };
   sessionStore.update(session.chatId, session);
+  await promptRegistrationStep(session);
+}
+
+async function handleStartCommand(message: Message) {
+  const session = ensureSession(message);
+  if (!session) return;
+
+  resetToMainMenu(session);
+
+  if (!session.jwt) {
+    try {
+      const client = createApiClient();
+      const existing = await client.getProfileByTelegramId(session.telegramId);
+      if (existing) {
+        session.jwt = existing.token;
+        session.profile = existing.user;
+        session.language = existing.user.language;
+        sessionStore.update(session.chatId, session);
+        await bot.sendMessage(
+          session.chatId,
+          t(session.language, "registration.success_returning", { name: existing.user.fullName })
+        );
+      }
+    } catch (error) {
+      if (error instanceof ApiError && error.status !== 404) {
+        logger.error("Failed to fetch profile by telegram id", error);
+      }
+    }
+  }
+
+  const language = getLanguage(session);
+  await bot.sendMessage(session.chatId, t(language, "start.welcome"));
   await sendLanguageMenu(session.chatId, language);
 }
 
@@ -371,6 +435,359 @@ async function handleLoginResponse(session: SessionData, message: Message) {
   session.login = login;
   sessionStore.update(session.chatId, session);
   await promptLoginStep(session);
+}
+
+async function startEstimateFlow(session: SessionData) {
+  session.mode = "estimate";
+  session.estimate = { step: "status" };
+  sessionStore.update(session.chatId, session);
+  await bot.sendMessage(session.chatId, t(session.language, "estimate.intro"));
+  await promptEstimateStep(session);
+}
+
+async function promptEstimateStep(session: SessionData) {
+  const state = session.estimate;
+  if (!state) return;
+  const language = session.language;
+  if (state.step === "status") {
+    await bot.sendMessage(session.chatId, t(language, "estimate.prompt_status"), {
+      reply_markup: {
+        inline_keyboard: FILING_STATUSES.map((status) => [
+          {
+            text: formatOptionLabel(language, status),
+            callback_data: `${callbackPrefixes.estimate}:STATUS:${status.value}`,
+          },
+        ]),
+      },
+    });
+    return;
+  }
+  if (state.step === "dependents") {
+    await bot.sendMessage(session.chatId, t(language, "estimate.prompt_dependents"));
+    return;
+  }
+  if (state.step === "income") {
+    await bot.sendMessage(session.chatId, t(language, "estimate.prompt_income"));
+    return;
+  }
+  if (state.step === "result") {
+    await sendEstimateSummary(session);
+  }
+}
+
+async function handleEstimateInput(session: SessionData, message: Message) {
+  const state = session.estimate;
+  if (!state || !message.text) return;
+  const language = session.language;
+  const text = message.text.trim();
+  if (state.step === "dependents") {
+    const value = Number.parseInt(text, 10);
+    if (Number.isNaN(value) || value < 0) {
+      await bot.sendMessage(session.chatId, t(language, "estimate.invalid_number"));
+      return;
+    }
+    state.dependents = value;
+    state.step = "income";
+    session.estimate = state;
+    sessionStore.update(session.chatId, session);
+    await promptEstimateStep(session);
+    return;
+  }
+  if (state.step === "income") {
+    const sanitized = text.replace(/[^0-9.,-]/g, "").replace(/,/g, "");
+    const value = Number.parseFloat(sanitized);
+    if (!Number.isFinite(value) || value < 0) {
+      await bot.sendMessage(session.chatId, t(language, "estimate.invalid_number"));
+      return;
+    }
+    state.income = value;
+    state.step = "result";
+    session.estimate = state;
+    sessionStore.update(session.chatId, session);
+    await completeEstimate(session);
+  }
+}
+
+async function completeEstimate(session: SessionData) {
+  const state = session.estimate;
+  if (!state || !state.status || state.dependents === undefined || state.income === undefined) return;
+  const result = calculateRefundEstimate(state.status, state.dependents, state.income);
+  state.result = result;
+  state.step = "result";
+  session.estimate = state;
+  session.mode = "idle";
+  sessionStore.update(session.chatId, session);
+  await sendEstimateSummary(session);
+}
+
+async function sendEstimateSummary(session: SessionData) {
+  const state = session.estimate;
+  if (!state || !state.result) return;
+  const { result } = state;
+  const language = session.language;
+  const statusOption = FILING_STATUSES.find((option) => option.value === result.status);
+  const statusLabel = statusOption ? formatOptionLabel(language, statusOption) : result.status;
+  const summary = t(language, "estimate.result_details", {
+    status: statusLabel,
+    dependents: result.dependents,
+    income: formatCurrency(language, result.income),
+    taxable: formatCurrency(language, result.taxableIncome),
+    credits: formatCurrency(language, result.credits),
+    withheld: formatCurrency(language, result.withheld),
+    tax: formatCurrency(language, result.estimatedTax),
+  });
+  let conclusion: string;
+  if (result.net > 0) {
+    conclusion = t(language, "estimate.result_refund", { amount: formatCurrency(language, Math.abs(result.net)) });
+  } else if (result.net < 0) {
+    conclusion = t(language, "estimate.result_tax_due", { amount: formatCurrency(language, Math.abs(result.net)) });
+  } else {
+    conclusion = t(language, "estimate.result_break_even");
+  }
+  const inline_keyboard: InlineKeyboardButton[][] = [
+    [
+      {
+        text: t(language, "estimate.download_pdf"),
+        callback_data: `${callbackPrefixes.estimatePdf}:LATEST`,
+      },
+    ],
+    [
+      { text: t(language, "estimate.restart"), callback_data: `${callbackPrefixes.estimate}:RESTART` },
+      { text: t(language, "menu.subscription_plans"), callback_data: `${callbackPrefixes.menu}:SUBSCRIPTION_PLANS` },
+    ],
+    [
+      { text: t(language, "menu.back_to_main"), callback_data: `${callbackPrefixes.menu}:MAIN` },
+    ],
+  ];
+  await bot.sendMessage(session.chatId, `${summary}\n\n${conclusion}`, {
+    reply_markup: { inline_keyboard },
+  });
+}
+
+function escapePdfText(text: string): string {
+  return text.replace(/\\/g, "\\\\").replace(/\(/g, "\\(").replace(/\)/g, "\\)");
+}
+
+function createEstimatePdf(language: LanguageCode, result: RefundEstimateResult): Buffer {
+  const statusOption = FILING_STATUSES.find((option) => option.value === result.status);
+  const statusLabel = statusOption ? formatOptionLabel(language, statusOption) : result.status;
+  const lines = [
+    t(language, "estimate.pdf_title"),
+    "",
+    t(language, "estimate.summary_status", { status: statusLabel }),
+    t(language, "estimate.summary_dependents", { dependents: result.dependents }),
+    t(language, "estimate.summary_income", { income: formatCurrency(language, result.income) }),
+    t(language, "estimate.summary_taxable", { taxable: formatCurrency(language, result.taxableIncome) }),
+    t(language, "estimate.summary_tax", { tax: formatCurrency(language, result.estimatedTax) }),
+    t(language, "estimate.summary_credits", { credits: formatCurrency(language, result.credits) }),
+    t(language, "estimate.summary_withheld", { withheld: formatCurrency(language, result.withheld) }),
+  ];
+  if (result.net > 0) {
+    lines.push(t(language, "estimate.result_refund", { amount: formatCurrency(language, Math.abs(result.net)) }));
+  } else if (result.net < 0) {
+    lines.push(t(language, "estimate.result_tax_due", { amount: formatCurrency(language, Math.abs(result.net)) }));
+  } else {
+    lines.push(t(language, "estimate.result_break_even"));
+  }
+
+  const escapedLines = lines.map((line) => `(${escapePdfText(line)}) Tj`);
+  if (escapedLines.length === 0) {
+    escapedLines.push("() Tj");
+  }
+  const textStream = [
+    "BT",
+    "/F1 18 Tf",
+    "1 0 0 1 72 720 Tm",
+    "24 TL",
+    escapedLines[0],
+    ...escapedLines.slice(1).flatMap((line) => ["T*", line]),
+    "ET",
+    "",
+  ].join("\n");
+  const objects: string[] = [];
+  const header = "%PDF-1.4\n";
+  const contentLength = Buffer.byteLength(textStream, "utf-8");
+  objects.push("1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n");
+  objects.push("2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n");
+  objects.push(
+    "3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >>\nendobj\n"
+  );
+  objects.push(`4 0 obj\n<< /Length ${contentLength} >>\nstream\n${textStream}endstream\nendobj\n`);
+  objects.push("5 0 obj\n<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Name /F1 >>\nendobj\n");
+
+  let offset = header.length;
+  const xrefEntries = ["0000000000 65535 f \n"];
+  const body = objects
+    .map((obj) => {
+      const current = offset;
+      offset += Buffer.byteLength(obj, "utf-8");
+      xrefEntries.push(`${current.toString().padStart(10, "0")} 00000 n \n`);
+      return obj;
+    })
+    .join("");
+  const xrefStart = offset;
+  const xref =
+    `xref\n0 ${objects.length + 1}\n` +
+    xrefEntries.join("") +
+    `trailer\n<< /Size ${objects.length + 1} /Root 1 0 R >>\nstartxref\n${xrefStart}\n%%EOF`;
+  const pdf = header + body + xref;
+  return Buffer.from(pdf, "utf-8");
+}
+
+async function sendEstimatePdf(session: SessionData) {
+  const state = session.estimate;
+  if (!state || !state.result) {
+    await bot.sendMessage(session.chatId, t(session.language, "error.generic"));
+    return;
+  }
+  const buffer = createEstimatePdf(session.language, state.result);
+  await bot.sendDocument(session.chatId, {
+    value: buffer,
+    filename: "refund-estimate.pdf",
+    contentType: "application/pdf",
+  });
+}
+
+async function ensureProfile(session: SessionData): Promise<UserProfile | null> {
+  if (!session.jwt) return null;
+  if (session.profile) return session.profile;
+  const client = createApiClient(session.jwt);
+  try {
+    const profile = await client.fetchProfile();
+    session.profile = profile;
+    sessionStore.update(session.chatId, session);
+    return profile;
+  } catch (error) {
+    logger.error("fetchProfile error %o", error);
+    return null;
+  }
+}
+
+async function handleFileTaxes(session: SessionData) {
+  if (!session.jwt) {
+    await beginRegistration(session, "registration.required_for_filing");
+    return;
+  }
+  const profile = await ensureProfile(session);
+  if (!profile) {
+    await bot.sendMessage(session.chatId, t(session.language, "error.generic"));
+    return;
+  }
+  const planId = profile.subscriptionPlan ?? "free";
+  const status = profile.subscriptionStatus ?? "none";
+  if (planId === "free" || status === "none" || status === "canceled" || status === "past_due") {
+    await bot.sendMessage(session.chatId, t(session.language, "filing.plan_free_limited"), {
+      reply_markup: {
+        inline_keyboard: [
+          [
+            { text: t(session.language, "menu.estimate_refund"), callback_data: `${callbackPrefixes.menu}:ESTIMATE_REFUND` },
+          ],
+          [
+            { text: t(session.language, "menu.subscription_plans"), callback_data: `${callbackPrefixes.menu}:SUBSCRIPTION_PLANS` },
+          ],
+        ],
+      },
+    });
+    return;
+  }
+  await bot.sendMessage(
+    session.chatId,
+    t(session.language, "filing.plan_paid_welcome", { plan: subscriptionPlanLabel(session.language, planId) })
+  );
+  await startFilingWizard(session);
+}
+
+async function ensureAuthenticatedForDocuments(session: SessionData): Promise<boolean> {
+  if (session.jwt) return true;
+  await beginRegistration(session, "registration.required_for_documents");
+  return false;
+}
+
+async function showSubscriptionPlans(session: SessionData) {
+  const language = session.language;
+  const inline_keyboard = SUBSCRIPTION_PLANS.map((plan) => [
+    {
+      text: t(language, plan.labelKey),
+      callback_data: `${callbackPrefixes.subscription}:SELECT:${plan.id}`,
+    },
+  ]);
+  inline_keyboard.push([{ text: t(language, "menu.back_to_main"), callback_data: `${callbackPrefixes.menu}:MAIN` }]);
+  await bot.sendMessage(session.chatId, t(language, "subscription.intro"), {
+    reply_markup: { inline_keyboard },
+  });
+}
+
+async function handleSubscriptionAction(session: SessionData, parts: string[]) {
+  const action = parts[0];
+  const language = session.language;
+  if (action === "SELECT") {
+    const planId = parts[1] as SubscriptionPlanId;
+    const plan = findSubscriptionPlan(planId);
+    if (!plan) return;
+    await bot.sendMessage(session.chatId, t(language, plan.detailsKey));
+    if (!plan.requiresPayment) {
+      session.subscription = { planId, awaitingConfirmation: false };
+      sessionStore.update(session.chatId, session);
+      await bot.sendMessage(session.chatId, t(language, "subscription.free_features"));
+      await sendMainMenu(session);
+      return;
+    }
+    if (!session.jwt) {
+      await beginRegistration(session, "registration.required_for_subscription");
+      return;
+    }
+    const client = createApiClient(session.jwt);
+    try {
+      const checkout = await client.createSubscriptionCheckout(planId);
+      session.subscription = { planId, awaitingConfirmation: true, checkoutUrl: checkout.checkoutUrl };
+      session.mode = "subscription";
+      sessionStore.update(session.chatId, session);
+      await bot.sendMessage(
+        session.chatId,
+        t(language, "subscription.payment_link", { plan: t(language, plan.labelKey) }),
+        {
+          reply_markup: {
+            inline_keyboard: [
+              [{ text: t(language, "subscription.open_checkout"), url: checkout.checkoutUrl }],
+              [
+                {
+                  text: t(language, "subscription.payment_confirm"),
+                  callback_data: `${callbackPrefixes.subscription}:CONFIRM:${planId}`,
+                },
+              ],
+              [{ text: t(language, "menu.back_to_main"), callback_data: `${callbackPrefixes.menu}:MAIN` }],
+            ],
+          },
+        }
+      );
+    } catch (error) {
+      logger.error("Subscription checkout error %o", error);
+      await bot.sendMessage(session.chatId, t(language, "subscription.payment_failed"));
+    }
+  } else if (action === "CONFIRM") {
+    const planId = parts[1] as SubscriptionPlanId;
+    if (!session.jwt) {
+      await bot.sendMessage(session.chatId, t(language, "registration.required_for_subscription"));
+      return;
+    }
+    try {
+      const client = createApiClient(session.jwt);
+      const profile = await client.fetchProfile();
+      session.profile = profile;
+      session.subscription = undefined;
+      session.mode = "idle";
+      sessionStore.update(session.chatId, session);
+      const activePlan = profile.subscriptionPlan ?? planId;
+      await bot.sendMessage(
+        session.chatId,
+        t(language, "subscription.payment_confirmed", { plan: subscriptionPlanLabel(language, activePlan) })
+      );
+      await sendMainMenu(session);
+    } catch (error) {
+      logger.error("Subscription confirmation error %o", error);
+      await bot.sendMessage(session.chatId, t(language, "subscription.payment_failed"));
+    }
+  }
 }
 
 async function startFilingWizard(session: SessionData) {
@@ -725,6 +1142,8 @@ function resetToMainMenu(session: SessionData) {
   session.filing = undefined;
   session.profileEditor = undefined;
   session.reminder = undefined;
+  session.estimate = undefined;
+  session.subscription = undefined;
   sessionStore.update(session.chatId, session);
 }
 
@@ -741,6 +1160,9 @@ async function handleCallbackQuery(callback: CallbackQuery) {
       case callbackPrefixes.language: {
         const language = parts[0] as LanguageCode;
         session.language = language;
+        if (session.registration) {
+          session.registration.data.language = language;
+        }
         sessionStore.update(session.chatId, session);
         if (session.jwt) {
           try {
@@ -751,22 +1173,13 @@ async function handleCallbackQuery(callback: CallbackQuery) {
           } catch (error) {
             logger.warn("Language update API error %o", error);
           }
-          await bot.sendMessage(session.chatId, t(language, "language.updated", { language: languageLabel(language) }));
-          await sendMainMenu(session);
-        } else {
-          if (session.registration) {
-            session.registration.data.language = language;
-          }
-          await bot.sendMessage(session.chatId, t(language, "registration.intro"));
-          session.registration = session.registration ?? {
-            stepIndex: 0,
-            data: { telegramId: session.telegramId, language } as Partial<RegistrationPayload>,
-          };
-          session.registration.stepIndex = 0;
-          session.mode = "registration";
-          sessionStore.update(session.chatId, session);
-          await promptRegistrationStep(session);
         }
+        await bot.sendMessage(
+          session.chatId,
+          t(language, "language.updated", { language: languageLabel(language) })
+        );
+        await sendDisclaimer(session);
+        await sendMainMenu(session);
         break;
       }
       case callbackPrefixes.registration: {
@@ -791,37 +1204,50 @@ async function handleCallbackQuery(callback: CallbackQuery) {
       case callbackPrefixes.menu: {
         const action = parts[0];
         switch (action) {
-          case "START_FILING":
-            await startFilingWizard(session);
-            break;
-          case "VIEW_FORMS":
-            await listTaxForms(session);
-            break;
-          case "DOWNLOAD_PDF":
-            await listTaxForms(session);
-            break;
-          case "MAKE_PAYMENT":
-            await createPayment(session);
-            break;
-          case "ASK_AI":
+          case "ASK_TAX_QUESTION":
             session.mode = "ai";
             sessionStore.update(session.chatId, session);
             await bot.sendMessage(session.chatId, t(session.language, "ai.prompt"));
             break;
-          case "CHANGE_LANGUAGE":
-            await sendLanguageMenu(session.chatId, session.language);
+          case "ESTIMATE_REFUND":
+            await startEstimateFlow(session);
             break;
-          case "PROFILE":
-            session.mode = "profile";
-            sessionStore.update(session.chatId, session);
-            await showProfile(session);
+          case "FILE_TAXES":
+            await handleFileTaxes(session);
             break;
-          case "REMINDERS":
-            await startReminderFlow(session);
+          case "MY_DOCUMENTS":
+            if (await ensureAuthenticatedForDocuments(session)) {
+              await listTaxForms(session);
+            }
+            break;
+          case "SUBSCRIPTION_PLANS":
+            await showSubscriptionPlans(session);
+            break;
+          case "MAIN":
+            resetToMainMenu(session);
+            await sendMainMenu(session);
             break;
           default:
             await sendMainMenu(session);
         }
+        break;
+      }
+      case callbackPrefixes.estimate: {
+        const action = parts[0];
+        if (action === "STATUS") {
+          const status = parts[1];
+          session.estimate = session.estimate ?? { step: "status" };
+          session.estimate.status = status;
+          session.estimate.step = "dependents";
+          sessionStore.update(session.chatId, session);
+          await promptEstimateStep(session);
+        } else if (action === "RESTART") {
+          await startEstimateFlow(session);
+        }
+        break;
+      }
+      case callbackPrefixes.estimatePdf: {
+        await sendEstimatePdf(session);
         break;
       }
       case callbackPrefixes.filing: {
@@ -899,6 +1325,10 @@ async function handleCallbackQuery(callback: CallbackQuery) {
         }
         break;
       }
+      case callbackPrefixes.subscription: {
+        await handleSubscriptionAction(session, parts);
+        break;
+      }
       default:
         break;
     }
@@ -930,6 +1360,9 @@ async function handleMessage(message: Message) {
       break;
     case "reminder":
       await handleReminderInput(session, message);
+      break;
+    case "estimate":
+      await handleEstimateInput(session, message);
       break;
     default:
       await sendMainMenu(session);

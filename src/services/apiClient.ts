@@ -9,6 +9,7 @@ import {
   RegistrationPayload,
   UserProfile,
   AiResponse,
+  SubscriptionPlanId,
 } from "../types";
 
 interface RequestOptions extends RequestInit {
@@ -198,6 +199,15 @@ export class ApiClient {
     return this.request<{ checkoutUrl: string; sessionId: string }>("/payments/checkout", {
       method: "POST",
       body: JSON.stringify({ provider: "stripe" }),
+    });
+  }
+
+  async createSubscriptionCheckout(
+    plan: SubscriptionPlanId
+  ): Promise<{ checkoutUrl: string; sessionId: string }> {
+    return this.request<{ checkoutUrl: string; sessionId: string }>("/payments/subscription", {
+      method: "POST",
+      body: JSON.stringify({ plan }),
     });
   }
 
