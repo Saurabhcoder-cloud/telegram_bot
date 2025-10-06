@@ -4,6 +4,7 @@ import { languageLabel } from "../i18n";
 import { AiResponse, LanguageCode } from "../types";
 
 const DEFAULT_BASE_URL = "https://api.openai.com/v1";
+const OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1";
 const CHAT_COMPLETIONS_PATH = "/chat/completions";
 
 export class AiProviderError extends Error {
@@ -43,9 +44,10 @@ export async function queryAiAssistant(question: string, language: LanguageCode)
 
   const baseUrl = (config.aiBaseUrl || DEFAULT_BASE_URL).replace(/\/$/, "");
   const endpoint = `${baseUrl}${CHAT_COMPLETIONS_PATH}`;
+  const isOpenRouter = baseUrl === OPENROUTER_BASE_URL || /openrouter\.ai/.test(baseUrl);
 
   const body = {
-    model: config.aiModel || "gpt-4o-mini",
+    model: config.aiModel || (isOpenRouter ? "openrouter/auto" : "gpt-4o-mini"),
     temperature: 0.2,
     top_p: 0.9,
     messages: [
@@ -54,12 +56,19 @@ export async function queryAiAssistant(question: string, language: LanguageCode)
     ],
   };
 
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+    Authorization: `Bearer ${config.aiApiKey}`,
+  };
+
+  if (isOpenRouter) {
+    headers["HTTP-Referer"] = config.aiReferer ?? "https://taxhelp.ai";
+    headers["X-Title"] = config.aiTitle ?? "TaxHelp AI";
+  }
+
   const response = await fetch(endpoint, {
     method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${config.aiApiKey}`,
-    },
+    headers,
     body: JSON.stringify(body),
   });
 

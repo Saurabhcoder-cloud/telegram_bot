@@ -11,14 +11,23 @@ for (const key of required) {
 }
 
 const aiApiKey = process.env.AI_API_KEY ?? process.env.OPENAI_API_KEY ?? "";
+const isOpenRouterKey = /^(sk-or-|sk-ant-)/.test(aiApiKey);
+
+const resolvedAiBaseUrl =
+  process.env.AI_BASE_URL ?? (isOpenRouterKey ? "https://openrouter.ai/api/v1" : "https://api.openai.com/v1");
+
+const resolvedAiModel =
+  process.env.AI_MODEL ?? (isOpenRouterKey ? "openrouter/auto" : "gpt-4o-mini");
 
 export const config = {
   botToken: process.env.BOT_TOKEN!,
   apiBaseUrl: process.env.API_BASE_URL!,
   stripePublishableKey: process.env.STRIPE_KEY ?? "",
   aiApiKey,
-  aiModel: process.env.AI_MODEL ?? "gpt-4o-mini",
-  aiBaseUrl: process.env.AI_BASE_URL ?? "https://api.openai.com/v1",
+  aiModel: resolvedAiModel,
+  aiBaseUrl: resolvedAiBaseUrl,
+  aiReferer: process.env.AI_REFERER ?? "https://taxhelp.ai",
+  aiTitle: process.env.AI_TITLE ?? "TaxHelp AI",
   adminChatId: process.env.ADMIN_CHAT_ID,
   environment: process.env.NODE_ENV ?? "development",
   botName: process.env.BOT_NAME ?? "TaxHelp AI",

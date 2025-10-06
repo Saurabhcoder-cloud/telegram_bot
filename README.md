@@ -78,8 +78,10 @@ pm2 start ecosystem.config.js
 | `STRIPE_KEY` | Publishable key used for contextual messaging (backend handles checkout session creation) |
 | `AI_API_KEY` | OpenAI-compatible key used for direct AI fallback when the backend is unavailable |
 | `OPENAI_API_KEY` | Optional alias for `AI_API_KEY` to ease local setups |
-| `AI_MODEL` | Model identifier for the direct AI fallback (default `gpt-4o-mini`) |
-| `AI_BASE_URL` | Override the OpenAI-compatible base URL if using a proxy |
+| `AI_MODEL` | Model identifier for the direct AI fallback. Defaults to `gpt-4o-mini`, or `openrouter/auto` when an OpenRouter key (`sk-or-*`) is detected |
+| `AI_BASE_URL` | Override the OpenAI-compatible base URL. Defaults to OpenAI, or `https://openrouter.ai/api/v1` for OpenRouter keys |
+| `AI_REFERER` | Optional HTTP Referer header for providers such as OpenRouter (defaults to `https://taxhelp.ai`) |
+| `AI_TITLE` | Friendly application title sent to OpenRouter via the `X-Title` header |
 | `ADMIN_CHAT_ID` | Optional Telegram chat ID for startup notifications |
 | `WEBHOOK_URL` | Public HTTPS webhook endpoint (leave empty to use long polling) |
 | `WEBHOOK_SECRET` | Optional secret validated against `x-telegram-bot-api-secret-token` |
@@ -87,6 +89,8 @@ pm2 start ecosystem.config.js
 | `BOT_NAME`, `BOT_VERSION`, `BOT_AUTHOR` | Metadata used in logs and admin notifications |
 
 Either `AI_API_KEY` or `OPENAI_API_KEY` must be populated with your provider secret to enable the multilingual “Ask a Tax Question” flow. The assistant automatically replies in the user’s chosen language when the key is present.
+
+> **Using OpenRouter / DeepSeek.** Paste your `sk-or-…` key into `AI_API_KEY`. The bot automatically switches to the OpenRouter base URL and model defaults. For DeepSeek V3.1, set `AI_MODEL=deepseek/deepseek-chat` (or the exact slug advertised by OpenRouter). Optionally customise `AI_REFERER` and `AI_TITLE` to match your deployment domain and product name, as OpenRouter requires these headers.
 
 ## 🔗 API integration cheatsheet
 The bot relies on TaxHelp AI’s REST API. Below are representative payloads used in the workflows.
