@@ -12,6 +12,7 @@ import {
   UserProfile,
   RefundEstimateResult,
   SubscriptionPlanId,
+  OcrDocumentType,
 } from "./types";
 import { isValidDate, isValidEmail, isValidPhone, normalizePhone } from "./utils/validators";
 import {
@@ -19,13 +20,13 @@ import {
   INCOME_TYPES,
   REMINDER_TYPES,
   SUBSCRIPTION_PLANS,
-  ESTIMATE_DEPENDENT_CREDIT,
-  ESTIMATE_WITHHOLDING_RATE,
-  STANDARD_DEDUCTION,
   formatOptionLabel,
   formatStatus,
 } from "./constants";
 import { ApiError, createApiClient } from "./services/apiClient";
+import { estimateRefund } from "./tax/engine";
+import { inferDocumentTypeFromField, mapOcrProcessResult, refineDocumentType } from "./ocr/service";
+import { formatCurrency } from "./utils/format";
 
 const DEFAULT_LANGUAGE: LanguageCode = "en";
 
@@ -48,6 +49,27 @@ type LoginStep = {
   field: "email" | "password";
   promptKey: string;
   type: "email" | "password";
+};
+
+type TelegramDocumentAttachment = {
+  file_id: string;
+  file_name?: string;
+  mime_type?: string;
+};
+
+type TelegramPhotoAttachment = {
+  file_id: string;
+  width: number;
+  height: number;
+  file_size?: number;
+};
+
+type FileAttachment = TelegramDocumentAttachment | TelegramPhotoAttachment;
+
+type RichMessage = Message & {
+  caption?: string;
+  document?: TelegramDocumentAttachment;
+  photo?: TelegramPhotoAttachment[];
 };
 
 const registrationSteps: RegistrationStep[] = [
@@ -163,33 +185,8 @@ async function sendMainMenu(session: SessionData) {
   });
 }
 
-function getLocale(language: LanguageCode): string {
-  const match = LANGUAGES.find((lang) => lang.code === language);
-  return match?.locale ?? "en-US";
-}
-
-function formatCurrency(language: LanguageCode, value: number): string {
-  return new Intl.NumberFormat(getLocale(language), {
-    style: "currency",
-    currency: "USD",
-  }).format(value);
-}
-
 function calculateRefundEstimate(status: string, dependents: number, income: number): RefundEstimateResult {
-  const deduction = STANDARD_DEDUCTION[status] ?? STANDARD_DEDUCTION.single;
-  const taxableIncome = Math.max(0, income - deduction);
-  let estimatedTax = 0;
-  if (taxableIncome <= 11000) {
-    estimatedTax = taxableIncome * 0.1;
-  } else if (taxableIncome <= 44725) {
-    estimatedTax = 1100 + (taxableIncome - 11000) * 0.12;
-  } else {
-    estimatedTax = 5147 + (taxableIncome - 44725) * 0.22;
-  }
-  const credits = dependents * ESTIMATE_DEPENDENT_CREDIT;
-  const withheld = income * ESTIMATE_WITHHOLDING_RATE;
-  const net = withheld + credits - estimatedTax;
-  return { status, dependents, income, taxableIncome, estimatedTax, credits, withheld, net };
+  return estimateRefund({ status, dependents, income });
 }
 
 async function sendDisclaimer(session: SessionData) {
@@ -203,6 +200,40 @@ function findSubscriptionPlan(planId: SubscriptionPlanId) {
 function subscriptionPlanLabel(language: LanguageCode, planId: SubscriptionPlanId): string {
   const plan = findSubscriptionPlan(planId);
   return plan ? t(language, plan.labelKey) : planId;
+}
+
+function isDocumentAttachment(attachment: FileAttachment): attachment is TelegramDocumentAttachment {
+  return "mime_type" in attachment || "file_name" in attachment;
+}
+
+async function downloadTelegramFile(
+  fileId: string
+): Promise<{ buffer: Buffer; mimeType?: string; filePath?: string }> {
+  const infoResponse = await fetch(`https://api.telegram.org/bot${config.botToken}/getFile`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ file_id: fileId }),
+  });
+  if (!infoResponse.ok) {
+    const text = await infoResponse.text();
+    throw new Error(`getFile failed (${infoResponse.status}): ${text}`);
+  }
+  const infoPayload = await infoResponse.json();
+  const filePath = infoPayload?.result?.file_path as string | undefined;
+  if (!filePath) {
+    throw new Error("Telegram getFile response missing file_path");
+  }
+  const fileUrl = `https://api.telegram.org/file/bot${config.botToken}/${filePath}`;
+  const fileResponse = await fetch(fileUrl);
+  if (!fileResponse.ok) {
+    throw new Error(`Failed to download file ${fileResponse.status}`);
+  }
+  const arrayBuffer = await fileResponse.arrayBuffer();
+  return {
+    buffer: Buffer.from(arrayBuffer),
+    mimeType: fileResponse.headers.get("content-type") ?? undefined,
+    filePath,
+  };
 }
 
 async function beginRegistration(session: SessionData, messageKey?: string) {
@@ -563,7 +594,7 @@ async function sendEstimateSummary(session: SessionData) {
   const language = session.language;
   const statusOption = FILING_STATUSES.find((option) => option.value === result.status);
   const statusLabel = statusOption ? formatOptionLabel(language, statusOption) : result.status;
-  const summary = t(language, "estimate.result_details", {
+  const baseSummary = t(language, "estimate.result_details", {
     status: statusLabel,
     dependents: result.dependents,
     income: formatCurrency(language, result.income),
@@ -572,6 +603,38 @@ async function sendEstimateSummary(session: SessionData) {
     withheld: formatCurrency(language, result.withheld),
     tax: formatCurrency(language, result.estimatedTax),
   });
+  const extraLines: string[] = [];
+  if (result.creditsBreakdown) {
+    if (result.creditsBreakdown.childTaxCredit > 0) {
+      extraLines.push(
+        t(language, "estimate.summary_child_credit", {
+          amount: formatCurrency(language, result.creditsBreakdown.childTaxCredit),
+        })
+      );
+    }
+    if (result.creditsBreakdown.earnedIncomeCredit > 0) {
+      extraLines.push(
+        t(language, "estimate.summary_eitc", {
+          amount: formatCurrency(language, result.creditsBreakdown.earnedIncomeCredit),
+        })
+      );
+    }
+    if (result.creditsBreakdown.educationCredit > 0) {
+      extraLines.push(
+        t(language, "estimate.summary_education_credit", {
+          amount: formatCurrency(language, result.creditsBreakdown.educationCredit),
+        })
+      );
+    }
+  }
+  if (typeof result.marginalRate === "number") {
+    extraLines.push(
+      t(language, "estimate.summary_marginal_rate", {
+        rate: (result.marginalRate * 100).toFixed(1),
+      })
+    );
+  }
+  const summary = [baseSummary, ...extraLines].join("\n");
   let conclusion: string;
   if (result.net > 0) {
     conclusion = t(language, "estimate.result_refund", { amount: formatCurrency(language, Math.abs(result.net)) });
@@ -618,6 +681,36 @@ function createEstimatePdf(language: LanguageCode, result: RefundEstimateResult)
     t(language, "estimate.summary_credits", { credits: formatCurrency(language, result.credits) }),
     t(language, "estimate.summary_withheld", { withheld: formatCurrency(language, result.withheld) }),
   ];
+  if (result.creditsBreakdown) {
+    if (result.creditsBreakdown.childTaxCredit > 0) {
+      lines.push(
+        t(language, "estimate.summary_child_credit", {
+          amount: formatCurrency(language, result.creditsBreakdown.childTaxCredit),
+        })
+      );
+    }
+    if (result.creditsBreakdown.earnedIncomeCredit > 0) {
+      lines.push(
+        t(language, "estimate.summary_eitc", {
+          amount: formatCurrency(language, result.creditsBreakdown.earnedIncomeCredit),
+        })
+      );
+    }
+    if (result.creditsBreakdown.educationCredit > 0) {
+      lines.push(
+        t(language, "estimate.summary_education_credit", {
+          amount: formatCurrency(language, result.creditsBreakdown.educationCredit),
+        })
+      );
+    }
+  }
+  if (typeof result.marginalRate === "number") {
+    lines.push(
+      t(language, "estimate.summary_marginal_rate", {
+        rate: (result.marginalRate * 100).toFixed(1),
+      })
+    );
+  }
   if (result.net > 0) {
     lines.push(t(language, "estimate.result_refund", { amount: formatCurrency(language, Math.abs(result.net)) }));
   } else if (result.net < 0) {
@@ -886,9 +979,111 @@ async function promptFilingStep(session: SessionData) {
     current: filing.stepIndex + 1,
     total: filing.totalSteps,
   });
-  await bot.sendMessage(session.chatId, `${progress}\n\n${t(language, step.promptKey)}`, {
+  let message = `${progress}\n\n${t(language, step.promptKey)}`;
+  const hintKey = getUploadHintKey(step.field);
+  if (hintKey) {
+    message += `\n\n${t(language, hintKey)}`;
+  }
+  await bot.sendMessage(session.chatId, message, {
     reply_markup: { inline_keyboard: buttons },
   });
+}
+
+function getUploadHintKey(field: keyof FilingData): string | null {
+  if (field === "w2Income") return "filing.upload_hint_w2";
+  if (field === "form1099Income") return "filing.upload_hint_1099";
+  if (field === "scheduleCDetails") return "filing.upload_hint_schedule_c";
+  return null;
+}
+
+async function handleDocumentUpload(session: SessionData, message: Message) {
+  if (!session.jwt) {
+    await beginRegistration(session, "registration.required_for_filing");
+    return;
+  }
+  const filing = session.filing;
+  if (!filing) return;
+  const step = filingSteps[filing.stepIndex];
+  if (!step) {
+    await bot.sendMessage(session.chatId, t(session.language, "filing.ocr_not_supported"));
+    return;
+  }
+
+  const richMessage = message as RichMessage;
+  const baseType = inferDocumentTypeFromField(step.field);
+  const metadata = richMessage.caption ?? richMessage.document?.file_name ?? null;
+  const documentType = refineDocumentType(baseType, metadata);
+  if (!documentType) {
+    await bot.sendMessage(session.chatId, t(session.language, "filing.ocr_not_supported"));
+    return;
+  }
+
+  const attachment: FileAttachment | undefined =
+    richMessage.document ?? (richMessage.photo && richMessage.photo.length > 0
+      ? richMessage.photo[richMessage.photo.length - 1]
+      : undefined);
+  if (!attachment) {
+    await bot.sendMessage(session.chatId, t(session.language, "filing.ocr_failed"));
+    return;
+  }
+
+  try {
+    const downloaded = await downloadTelegramFile(attachment.file_id);
+    const buffer = downloaded.buffer;
+    const remoteName = downloaded.filePath ? downloaded.filePath.split("/").pop() : undefined;
+    const detectedMime = downloaded.mimeType;
+    const sourceName =
+      (isDocumentAttachment(attachment) && attachment.file_name) ||
+      (metadata ? metadata.replace(/[^a-z0-9_.-]/gi, "_") : undefined) ||
+      (remoteName ? remoteName.replace(/[^a-z0-9_.-]/gi, "_") : undefined) ||
+      `${documentType}-${Date.now()}`;
+    const baseName = sourceName.replace(/[^a-z0-9_.-]/gi, "_");
+    const extensionGuess =
+      (baseName.includes(".") ? baseName.split(".").pop() : undefined) ||
+      (remoteName && remoteName.includes(".") ? remoteName.split(".").pop() : undefined) ||
+      (isDocumentAttachment(attachment) && attachment.mime_type?.split("/").pop()) ||
+      (detectedMime?.split("/").pop()) ||
+      (richMessage.photo && richMessage.photo.length > 0 ? "jpg" : "bin");
+    const filename = baseName.includes(".") ? baseName : `${baseName}.${extensionGuess ?? "bin"}`;
+    const mimeType =
+      (isDocumentAttachment(attachment) && attachment.mime_type) ||
+      detectedMime ||
+      (richMessage.photo && richMessage.photo.length > 0 ? "image/jpeg" : "application/octet-stream");
+
+    await bot.sendMessage(session.chatId, t(session.language, "filing.ocr_processing"));
+
+    const client = createApiClient(session.jwt);
+    const upload = await client.uploadDocument(buffer, filename, mimeType);
+    const processed = await client.processOcr(upload.documentId, documentType as OcrDocumentType);
+    const mapped = mapOcrProcessResult(session.language, processed);
+
+    const summaryLines =
+      mapped.summaryLines.length > 0
+        ? mapped.summaryLines.map((line) => `• ${line}`).join("\n")
+        : t(session.language, "filing.ocr_no_fields");
+    const storedValue =
+      mapped.summaryLines.length > 0
+        ? mapped.summaryLines.join("; ")
+        : t(session.language, "filing.ocr_no_fields");
+
+    const payload = { [step.field]: storedValue } as Partial<FilingData>;
+    await client.saveFilingStep(filing.filingId!, filing.stepIndex, payload);
+
+    filing.data[step.field] = storedValue;
+    filing.stepIndex += 1;
+    session.filing = filing;
+    sessionStore.update(session.chatId, session);
+
+    const successMessage = `${t(session.language, "filing.ocr_success")}\n\n${t(
+      session.language,
+      "filing.ocr_success_header"
+    )}\n${summaryLines}`;
+    await bot.sendMessage(session.chatId, successMessage);
+    await promptFilingStep(session);
+  } catch (error) {
+    logger.error("Document OCR error %o", error);
+    await bot.sendMessage(session.chatId, t(session.language, "filing.ocr_failed"));
+  }
 }
 
 async function handleFilingResponse(session: SessionData, message: Message) {
@@ -956,6 +1151,20 @@ async function submitFiling(session: SessionData) {
     session.mode = "idle";
     sessionStore.update(session.chatId, session);
     await bot.sendMessage(session.chatId, t(session.language, "filing.submitted"));
+    try {
+      await bot.sendMessage(session.chatId, t(session.language, "pdf.preparing"));
+      const pdf = await client.generateTaxPdf(filing.filingId!);
+      const pdfBuffer = Buffer.from(await pdf.arrayBuffer());
+      await bot.sendDocument(session.chatId, {
+        value: pdfBuffer,
+        filename: "form-1040-draft.pdf",
+        contentType: "application/pdf",
+      });
+      await bot.sendMessage(session.chatId, t(session.language, "pdf.ready"));
+    } catch (pdfError) {
+      logger.warn("Unable to generate filing PDF %o", pdfError);
+      await bot.sendMessage(session.chatId, t(session.language, "pdf.unavailable"));
+    }
     await sendMainMenu(session);
   } catch (error) {
     logger.error("submitFiling error %o", error);
@@ -1374,9 +1583,18 @@ async function handleCallbackQuery(callback: CallbackQuery) {
 }
 
 async function handleMessage(message: Message) {
-  if (!message.text || message.text.startsWith("/")) return;
+  if (message.text?.startsWith("/")) return;
   const session = ensureSession(message);
   if (!session) return;
+
+  const richMessage = message as RichMessage;
+  const hasAttachment = Boolean(richMessage.document || (richMessage.photo && richMessage.photo.length > 0));
+  if (hasAttachment && session.mode === "filing") {
+    await handleDocumentUpload(session, message);
+    return;
+  }
+
+  if (!message.text) return;
 
   switch (session.mode) {
     case "registration":

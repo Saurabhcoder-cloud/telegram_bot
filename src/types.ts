@@ -83,6 +83,12 @@ export interface SessionProfileState {
 
 export type SubscriptionPlanId = "free" | "standard" | "pro" | "premium";
 
+export interface TaxCreditBreakdown {
+  childTaxCredit: number;
+  earnedIncomeCredit: number;
+  educationCredit: number;
+}
+
 export interface RefundEstimateResult {
   status: string;
   dependents: number;
@@ -90,8 +96,10 @@ export interface RefundEstimateResult {
   taxableIncome: number;
   estimatedTax: number;
   credits: number;
+  creditsBreakdown?: TaxCreditBreakdown;
   withheld: number;
   net: number;
+  marginalRate?: number;
 }
 
 export interface SessionEstimateState {
@@ -152,4 +160,29 @@ export interface ApiTaxForm {
 export interface AiResponse {
   answer: string;
   references?: string[];
+}
+
+export type OcrDocumentType = "w2" | "1099-int" | "1099-nec";
+
+export interface OcrProcessResult {
+  documentId: string;
+  type: OcrDocumentType;
+  fields: Record<string, string | number>;
+  rawText?: string;
+}
+
+export interface UploadDocumentResult {
+  documentId: string;
+  filename: string;
+  mimeType: string;
+}
+
+export interface TaxCalculationInput {
+  status: string;
+  dependents: number;
+  income: number;
+  withheld?: number;
+  childTaxCreditOverride?: number;
+  educationCreditOverride?: number;
+  earnedIncomeCreditOverride?: number;
 }
