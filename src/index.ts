@@ -13,7 +13,7 @@ import {
   RefundEstimateResult,
   SubscriptionPlanId,
 } from "./types";
-import { isValidDate, isValidEmail, normalizePhone } from "./utils/validators";
+import { isValidDate, isValidEmail, isValidPhone, normalizePhone } from "./utils/validators";
 import {
   FILING_STATUSES,
   INCOME_TYPES,
@@ -34,7 +34,7 @@ type RegistrationField = Exclude<keyof RegistrationPayload, "language" | "telegr
 type RegistrationStep = {
   field: RegistrationField;
   promptKey: string;
-  type: "text" | "email" | "date" | "select" | "optional";
+  type: "text" | "email" | "date" | "select" | "optional" | "password" | "phone";
   options?: { value: string; labelKey: string }[];
 };
 
@@ -53,7 +53,8 @@ type LoginStep = {
 const registrationSteps: RegistrationStep[] = [
   { field: "fullName", promptKey: "registration.ask_full_name", type: "text" },
   { field: "email", promptKey: "registration.ask_email", type: "email" },
-  { field: "phone", promptKey: "registration.ask_phone", type: "optional" },
+  { field: "phone", promptKey: "registration.ask_phone", type: "phone" },
+  { field: "password", promptKey: "registration.ask_password", type: "password" },
   { field: "dob", promptKey: "registration.ask_dob", type: "date" },
   {
     field: "filingStatus",
@@ -387,6 +388,14 @@ async function handleRegistrationResponse(session: SessionData, message: Message
       }
       registration.data[step.field] = text.toLowerCase();
       break;
+    case "phone": {
+      if (!isValidPhone(text)) {
+        await bot.sendMessage(session.chatId, t(language, "registration.invalid_phone"));
+        return;
+      }
+      registration.data[step.field] = normalizePhone(text);
+      break;
+    }
     case "optional":
       if (!text || text.toLowerCase() === t(language, "registration.optional_skip").toLowerCase()) {
         registration.data[step.field] = undefined;
@@ -397,6 +406,13 @@ async function handleRegistrationResponse(session: SessionData, message: Message
     case "date":
       if (!isValidDate(text)) {
         await bot.sendMessage(session.chatId, t(language, "registration.invalid_dob"));
+        return;
+      }
+      registration.data[step.field] = text;
+      break;
+    case "password":
+      if (text.length < 6) {
+        await bot.sendMessage(session.chatId, t(language, "registration.invalid_password"));
         return;
       }
       registration.data[step.field] = text;
