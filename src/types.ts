@@ -63,12 +63,43 @@ export interface FilingData {
   mileage?: string;
 }
 
+export type OcrDocumentType = "w2" | "1099-int" | "1099-nec";
+
+export type FilingFormId = OcrDocumentType;
+
+export type FilingFormValueType = "text" | "currency";
+
+export interface FilingFormFieldRequirement {
+  key: string;
+  labelKey: string;
+  valueType?: FilingFormValueType;
+}
+
+export interface FilingFormConfig {
+  id: FilingFormId;
+  field: keyof FilingData;
+  labelKey: string;
+  requiredFields: FilingFormFieldRequirement[];
+  ocrType: OcrDocumentType;
+}
+
+export interface SessionFilingFormState {
+  field: keyof FilingData;
+  formId: FilingFormId;
+  ocrType: OcrDocumentType;
+  requiredFields: FilingFormFieldRequirement[];
+  collected: Record<string, string>;
+  pendingKeys: string[];
+  awaitingUpload: boolean;
+}
+
 export interface SessionFilingState {
   filingId?: string;
   stepIndex: number;
   totalSteps: number;
   data: FilingData;
   summaryMessageId?: number;
+  formState?: SessionFilingFormState;
 }
 
 export interface SessionReminderState {
@@ -161,8 +192,6 @@ export interface AiResponse {
   answer: string;
   references?: string[];
 }
-
-export type OcrDocumentType = "w2" | "1099-int" | "1099-nec";
 
 export interface OcrProcessResult {
   documentId: string;

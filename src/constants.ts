@@ -1,4 +1,4 @@
-import { LanguageCode, SubscriptionPlanId } from "./types";
+import { FilingFormConfig, LanguageCode, SubscriptionPlanId } from "./types";
 
 export const FILING_STATUSES = [
   { value: "single", labelKey: "Single" },
@@ -75,6 +75,41 @@ export const SUBSCRIPTION_PLANS: SubscriptionPlan[] = [
     labelKey: "subscription.plan_label_premium",
     detailsKey: "subscription.plan_details_premium",
     requiresPayment: true,
+  },
+];
+
+export const FILING_FORM_CONFIG: FilingFormConfig[] = [
+  {
+    id: "w2",
+    field: "w2Income",
+    labelKey: "filing.form_label_w2",
+    ocrType: "w2",
+    requiredFields: [
+      { key: "employer", labelKey: "filing.form_field_employer" },
+      { key: "wages", labelKey: "filing.form_field_wages", valueType: "currency" },
+      { key: "fed_tax_withheld", labelKey: "filing.form_field_federal_tax_withheld", valueType: "currency" },
+    ],
+  },
+  {
+    id: "1099-int",
+    field: "form1099Income",
+    labelKey: "filing.form_label_1099_int",
+    ocrType: "1099-int",
+    requiredFields: [
+      { key: "payer", labelKey: "filing.form_field_payer" },
+      { key: "interest_income", labelKey: "filing.form_field_interest_income", valueType: "currency" },
+    ],
+  },
+  {
+    id: "1099-nec",
+    field: "scheduleCDetails",
+    labelKey: "filing.form_label_1099_nec",
+    ocrType: "1099-nec",
+    requiredFields: [
+      { key: "payer", labelKey: "filing.form_field_payer" },
+      { key: "non_employee_comp", labelKey: "filing.form_field_non_employee_comp", valueType: "currency" },
+      { key: "federal_tax_withheld", labelKey: "filing.form_field_federal_tax_withheld", valueType: "currency" },
+    ],
   },
 ];
 

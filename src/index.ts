@@ -6,16 +6,19 @@ import { LANGUAGES, languageLabel, t } from "./i18n";
 import { sessionStore } from "./session";
 import {
   FilingData,
+  FilingFormConfig,
+  FilingFormId,
+  FilingFormFieldRequirement,
   LanguageCode,
   RegistrationPayload,
   SessionData,
   UserProfile,
   RefundEstimateResult,
   SubscriptionPlanId,
-  OcrDocumentType,
 } from "./types";
 import { isValidDate, isValidEmail, isValidPhone, normalizePhone } from "./utils/validators";
 import {
+  FILING_FORM_CONFIG,
   FILING_STATUSES,
   INCOME_TYPES,
   REMINDER_TYPES,
@@ -25,7 +28,7 @@ import {
 } from "./constants";
 import { ApiError, createApiClient } from "./services/apiClient";
 import { estimateRefund } from "./tax/engine";
-import { inferDocumentTypeFromField, mapOcrProcessResult, refineDocumentType } from "./ocr/service";
+import { refineDocumentType } from "./ocr/service";
 import { formatCurrency } from "./utils/format";
 
 const DEFAULT_LANGUAGE: LanguageCode = "en";
@@ -104,6 +107,52 @@ const filingSteps: FilingStep[] = [
   { field: "mileage", promptKey: "filing.prompt_mileage", optional: true },
 ];
 
+const filingFormsByField = new Map<keyof FilingData, FilingFormConfig[]>();
+const filingFormsById = new Map<FilingFormId, FilingFormConfig>();
+
+for (const configItem of FILING_FORM_CONFIG) {
+  const existing = filingFormsByField.get(configItem.field) ?? [];
+  existing.push(configItem);
+  filingFormsByField.set(configItem.field, existing);
+  filingFormsById.set(configItem.id, configItem);
+}
+
+function getFormConfigsForField(field: keyof FilingData): FilingFormConfig[] {
+  return filingFormsByField.get(field) ?? [];
+}
+
+function getFormConfigById(formId: FilingFormId): FilingFormConfig | undefined {
+  return filingFormsById.get(formId);
+}
+
+function formatFormFieldValue(
+  language: LanguageCode,
+  requirement: FilingFormFieldRequirement,
+  rawValue: string | number
+): string {
+  if (requirement.valueType === "currency") {
+    const numeric =
+      typeof rawValue === "number"
+        ? rawValue
+        : Number(String(rawValue).replace(/[^0-9.-]/g, ""));
+    if (!Number.isNaN(numeric) && Number.isFinite(numeric)) {
+      return formatCurrency(language, numeric);
+    }
+  }
+  return typeof rawValue === "number" ? rawValue.toString() : rawValue;
+}
+
+function buildFormSummary(
+  language: LanguageCode,
+  config: FilingFormConfig,
+  collected: Record<string, string>
+): string[] {
+  return config.requiredFields.map((requirement) => {
+    const value = collected[requirement.key] ?? "—";
+    return `${t(language, requirement.labelKey)}: ${value}`;
+  });
+}
+
 const loginSteps: LoginStep[] = [
   { field: "email", promptKey: "login.ask_email", type: "email" },
   { field: "password", promptKey: "login.ask_password", type: "password" },
@@ -114,6 +163,7 @@ const callbackPrefixes = {
   registration: "REG",
   menu: "MENU",
   filing: "FILING",
+  filingForm: "FILING_FORM",
   pdf: "PDF",
   profile: "PROFILE",
   reminder: "REMINDER",
@@ -933,6 +983,7 @@ async function startFilingWizard(session: SessionData) {
       stepIndex: response.step ?? 0,
       totalSteps: filingSteps.length,
       data: response.data ?? {},
+      formState: undefined,
     };
     sessionStore.update(session.chatId, session);
     if (response.step && response.step < filingSteps.length) {
@@ -956,6 +1007,13 @@ async function promptFilingStep(session: SessionData) {
     return;
   }
   const language = session.language;
+
+  if (filing.formState && filing.formState.field !== step.field) {
+    filing.formState = undefined;
+    session.filing = filing;
+    sessionStore.update(session.chatId, session);
+  }
+
   const buttons: InlineKeyboardButton[][] = [
     [
       { text: t(language, "menu.cancel"), callback_data: `${callbackPrefixes.filing}:CANCEL` },
@@ -987,6 +1045,46 @@ async function promptFilingStep(session: SessionData) {
   await bot.sendMessage(session.chatId, message, {
     reply_markup: { inline_keyboard: buttons },
   });
+
+  const formConfigs = getFormConfigsForField(step.field);
+  if (formConfigs.length === 0) {
+    return;
+  }
+
+  if (!filing.formState) {
+    const formButtons: InlineKeyboardButton[][] = formConfigs.map((config) => [
+      {
+        text: t(language, config.labelKey),
+        callback_data: `${callbackPrefixes.filingForm}:SELECT:${config.id}`,
+      },
+    ]);
+    await bot.sendMessage(session.chatId, t(language, "filing.select_form"), {
+      reply_markup: { inline_keyboard: formButtons },
+    });
+    return;
+  }
+
+  if (filing.formState.awaitingUpload) {
+    const currentConfig = getFormConfigById(filing.formState.formId);
+    if (currentConfig) {
+      await bot.sendMessage(
+        session.chatId,
+        t(language, "filing.upload_prompt", { form: t(language, currentConfig.labelKey) })
+      );
+    }
+    return;
+  }
+
+  if (filing.formState.pendingKeys.length > 0) {
+    const nextKey = filing.formState.pendingKeys[0];
+    const requirement = filing.formState.requiredFields.find((item) => item.key === nextKey);
+    if (requirement) {
+      await bot.sendMessage(
+        session.chatId,
+        t(language, "filing.form_missing_prompt", { field: t(language, requirement.labelKey) })
+      );
+    }
+  }
 }
 
 function getUploadHintKey(field: keyof FilingData): string | null {
@@ -1010,14 +1108,25 @@ async function handleDocumentUpload(session: SessionData, message: Message) {
   }
 
   const richMessage = message as RichMessage;
-  const baseType = inferDocumentTypeFromField(step.field);
-  const metadata = richMessage.caption ?? richMessage.document?.file_name ?? null;
-  const documentType = refineDocumentType(baseType, metadata);
-  if (!documentType) {
+  const formState = filing.formState;
+  if (!formState) {
+    await bot.sendMessage(session.chatId, t(session.language, "filing.form_select_before_upload"));
+    return;
+  }
+
+  if (!formState.awaitingUpload) {
+    await bot.sendMessage(session.chatId, t(session.language, "filing.form_upload_not_expected"));
+    return;
+  }
+
+  const formConfig = getFormConfigById(formState.formId);
+  if (!formConfig) {
     await bot.sendMessage(session.chatId, t(session.language, "filing.ocr_not_supported"));
     return;
   }
 
+  const metadata = richMessage.caption ?? richMessage.document?.file_name ?? null;
+  const refinedDocumentType = refineDocumentType(formState.ocrType, metadata) ?? formState.ocrType;
   const attachment: FileAttachment | undefined =
     richMessage.document ?? (richMessage.photo && richMessage.photo.length > 0
       ? richMessage.photo[richMessage.photo.length - 1]
@@ -1036,7 +1145,7 @@ async function handleDocumentUpload(session: SessionData, message: Message) {
       (isDocumentAttachment(attachment) && attachment.file_name) ||
       (metadata ? metadata.replace(/[^a-z0-9_.-]/gi, "_") : undefined) ||
       (remoteName ? remoteName.replace(/[^a-z0-9_.-]/gi, "_") : undefined) ||
-      `${documentType}-${Date.now()}`;
+      `${formConfig.id}-${Date.now()}`;
     const baseName = sourceName.replace(/[^a-z0-9_.-]/gi, "_");
     const extensionGuess =
       (baseName.includes(".") ? baseName.split(".").pop() : undefined) ||
@@ -1054,49 +1163,160 @@ async function handleDocumentUpload(session: SessionData, message: Message) {
 
     const client = createApiClient(session.jwt);
     const upload = await client.uploadDocument(buffer, filename, mimeType);
-    const processed = await client.processOcr(upload.documentId, documentType as OcrDocumentType);
-    const mapped = mapOcrProcessResult(session.language, processed);
+    const processed = await client.processOcr(upload.documentId, refinedDocumentType);
 
-    const summaryLines =
-      mapped.summaryLines.length > 0
-        ? mapped.summaryLines.map((line) => `• ${line}`).join("\n")
-        : t(session.language, "filing.ocr_no_fields");
-    const storedValue =
-      mapped.summaryLines.length > 0
-        ? mapped.summaryLines.join("; ")
-        : t(session.language, "filing.ocr_no_fields");
+    const updatedCollected = { ...formState.collected };
+    const pendingKeys: string[] = [];
+    for (const requirement of formConfig.requiredFields) {
+      const rawValue = processed.fields[requirement.key];
+      if (rawValue !== undefined && rawValue !== null && rawValue !== "") {
+        updatedCollected[requirement.key] = formatFormFieldValue(session.language, requirement, rawValue);
+      }
+      if (!updatedCollected[requirement.key]) {
+        pendingKeys.push(requirement.key);
+      }
+    }
 
-    const payload = { [step.field]: storedValue } as Partial<FilingData>;
-    await client.saveFilingStep(filing.filingId!, filing.stepIndex, payload);
-
-    filing.data[step.field] = storedValue;
-    filing.stepIndex += 1;
+    filing.formState = {
+      ...formState,
+      awaitingUpload: false,
+      pendingKeys,
+      collected: updatedCollected,
+    };
     session.filing = filing;
     sessionStore.update(session.chatId, session);
 
-    const successMessage = `${t(session.language, "filing.ocr_success")}\n\n${t(
-      session.language,
-      "filing.ocr_success_header"
-    )}\n${summaryLines}`;
+    const capturedLines = formConfig.requiredFields
+      .map((requirement) => {
+        const value = updatedCollected[requirement.key];
+        if (!value) return null;
+        return `• ${t(session.language, requirement.labelKey)}: ${value}`;
+      })
+      .filter((line): line is string => Boolean(line));
+
+    let successMessage = `${t(session.language, "filing.ocr_success")}\n\n`;
+    if (capturedLines.length > 0) {
+      successMessage += `${t(session.language, "filing.ocr_success_header")}\n${capturedLines.join("\n")}`;
+    } else {
+      successMessage += t(session.language, "filing.ocr_no_fields");
+    }
+
+    if (pendingKeys.length > 0) {
+      const missingLabels = pendingKeys
+        .map((key) => formConfig.requiredFields.find((item) => item.key === key))
+        .filter((item): item is FilingFormFieldRequirement => Boolean(item))
+        .map((item) => t(session.language, item.labelKey));
+      successMessage += `\n\n${t(session.language, "filing.form_missing_list", { fields: missingLabels.join(", ") })}`;
+    } else {
+      successMessage += `\n\n${t(session.language, "filing.form_all_captured")}`;
+    }
+
     await bot.sendMessage(session.chatId, successMessage);
-    await promptFilingStep(session);
+
+    if (pendingKeys.length > 0) {
+      const nextRequirement = formConfig.requiredFields.find((item) => item.key === pendingKeys[0]);
+      if (nextRequirement) {
+        await bot.sendMessage(
+          session.chatId,
+          t(session.language, "filing.form_missing_prompt", { field: t(session.language, nextRequirement.labelKey) })
+        );
+      }
+    } else {
+      await finalizeFormCapture(session);
+    }
   } catch (error) {
     logger.error("Document OCR error %o", error);
     await bot.sendMessage(session.chatId, t(session.language, "filing.ocr_failed"));
   }
 }
 
+async function finalizeFormCapture(session: SessionData) {
+  const filing = session.filing;
+  if (!filing || !filing.formState) return;
+  if (!session.jwt) {
+    await beginRegistration(session, "registration.required_for_filing");
+    return;
+  }
+
+  const formState = filing.formState;
+  const formConfig = getFormConfigById(formState.formId);
+  if (!formConfig) return;
+
+  const language = session.language;
+  const summaryLines = buildFormSummary(language, formConfig, formState.collected);
+  const storedValue = summaryLines.join("; ");
+
+  const client = createApiClient(session.jwt);
+  try {
+    await client.saveFilingStep(filing.filingId!, filing.stepIndex, {
+      [formConfig.field]: storedValue,
+    } as Partial<FilingData>);
+  } catch (error) {
+    logger.error("Filing form save error %o", error);
+    await bot.sendMessage(session.chatId, t(language, "error.generic"));
+    return;
+  }
+
+  filing.data[formConfig.field] = storedValue;
+  filing.stepIndex += 1;
+  filing.formState = undefined;
+  session.filing = filing;
+  sessionStore.update(session.chatId, session);
+
+  await bot.sendMessage(session.chatId, t(language, "filing.form_complete", { form: t(language, formConfig.labelKey) }));
+  await promptFilingStep(session);
+}
+
 async function handleFilingResponse(session: SessionData, message: Message) {
   const filing = session.filing;
   if (!filing || !message.text) return;
-  const step = filingSteps[filing.stepIndex];
-  if (!step) return;
+  const formState = filing.formState;
   const language = session.language;
   const text = message.text.trim();
   if (!text) {
     await bot.sendMessage(session.chatId, t(language, "error.generic"));
     return;
   }
+
+  if (formState && formState.pendingKeys.length > 0) {
+    const currentKey = formState.pendingKeys[0];
+    const requirement = formState.requiredFields.find((item) => item.key === currentKey);
+    if (!requirement) {
+      formState.pendingKeys = formState.pendingKeys.slice(1);
+      filing.formState = formState;
+      session.filing = filing;
+      sessionStore.update(session.chatId, session);
+      if (formState.pendingKeys.length === 0) {
+        await finalizeFormCapture(session);
+      }
+      return;
+    }
+
+    formState.collected[currentKey] = formatFormFieldValue(language, requirement, text);
+    formState.pendingKeys = formState.pendingKeys.slice(1);
+    filing.formState = formState;
+    session.filing = filing;
+    sessionStore.update(session.chatId, session);
+
+    await bot.sendMessage(session.chatId, t(language, "filing.saved"));
+
+    if (formState.pendingKeys.length > 0) {
+      const nextKey = formState.pendingKeys[0];
+      const nextRequirement = formState.requiredFields.find((item) => item.key === nextKey);
+      if (nextRequirement) {
+        await bot.sendMessage(
+          session.chatId,
+          t(language, "filing.form_missing_prompt", { field: t(language, nextRequirement.labelKey) })
+        );
+      }
+    } else {
+      await finalizeFormCapture(session);
+    }
+    return;
+  }
+
+  const step = filingSteps[filing.stepIndex];
+  if (!step) return;
   filing.data[step.field] = text;
   try {
     const client = createApiClient(session.jwt);
@@ -1500,6 +1720,7 @@ async function handleCallbackQuery(callback: CallbackQuery) {
         const action = parts[0];
         if (action === "BACK") {
           if (session.filing.stepIndex > 0) {
+            session.filing.formState = undefined;
             session.filing.stepIndex -= 1;
             sessionStore.update(session.chatId, session);
             await promptFilingStep(session);
@@ -1514,6 +1735,7 @@ async function handleCallbackQuery(callback: CallbackQuery) {
           if (step) {
             session.filing.data[step.field] = "";
             session.filing.stepIndex += 1;
+            session.filing.formState = undefined;
             sessionStore.update(session.chatId, session);
             await promptFilingStep(session);
           }
@@ -1522,11 +1744,42 @@ async function handleCallbackQuery(callback: CallbackQuery) {
           const index = filingSteps.findIndex((step) => step.field === field);
           if (index >= 0) {
             session.filing.stepIndex = index;
+            if (session.filing.formState) {
+              session.filing.formState = undefined;
+            }
             sessionStore.update(session.chatId, session);
             await promptFilingStep(session);
           }
         } else if (action === "SUBMIT") {
           await submitFiling(session);
+        }
+        break;
+      }
+      case callbackPrefixes.filingForm: {
+        if (!session.filing) break;
+        const action = parts[0];
+        if (action === "SELECT") {
+          const formId = parts[1] as FilingFormId;
+          const config = getFormConfigById(formId);
+          const step = filingSteps[session.filing.stepIndex];
+          if (!config || !step || config.field !== step.field) {
+            await bot.sendMessage(session.chatId, t(session.language, "filing.ocr_not_supported"));
+            break;
+          }
+          session.filing.formState = {
+            field: config.field,
+            formId: config.id,
+            ocrType: config.ocrType,
+            requiredFields: config.requiredFields,
+            collected: {},
+            pendingKeys: config.requiredFields.map((item) => item.key),
+            awaitingUpload: true,
+          };
+          sessionStore.update(session.chatId, session);
+          await bot.sendMessage(
+            session.chatId,
+            t(session.language, "filing.upload_prompt", { form: t(session.language, config.labelKey) })
+          );
         }
         break;
       }
