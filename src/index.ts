@@ -15,6 +15,7 @@ import {
   UserProfile,
   RefundEstimateResult,
   SubscriptionPlanId,
+  AiResponse,
 } from "./types";
 import { isValidDate, isValidEmail, isValidPhone, normalizePhone } from "./utils/validators";
 import {
@@ -30,6 +31,7 @@ import { ApiError, createApiClient } from "./services/apiClient";
 import { estimateRefund } from "./tax/engine";
 import { refineDocumentType } from "./ocr/service";
 import { formatCurrency } from "./utils/format";
+import { AiProviderError, queryAiAssistant } from "./services/aiService";
 
 const DEFAULT_LANGUAGE: LanguageCode = "en";
 
@@ -1397,8 +1399,28 @@ async function handleAiQuestion(session: SessionData, message: Message) {
   const language = session.language;
   await bot.sendMessage(session.chatId, t(language, "ai.thinking"));
   try {
-    const client = createApiClient(session.jwt);
-    const response = await client.askAi(message.text, language);
+    let response: AiResponse | null = null;
+    if (config.aiApiKey) {
+      try {
+        response = await queryAiAssistant(message.text, language);
+      } catch (directError) {
+        if (directError instanceof AiProviderError) {
+          logger.warn("Direct AI provider unavailable %o", directError);
+        } else {
+          logger.warn("Unexpected AI provider error %o", directError);
+        }
+      }
+    }
+
+    if (!response) {
+      const client = createApiClient(session.jwt);
+      response = await client.askAi(message.text, language);
+    }
+
+    if (!response) {
+      throw new Error("AI response missing");
+    }
+
     let reply = response.answer;
     if (response.references && response.references.length > 0) {
       reply += `\n\n${t(language, "ai.reference_prefix")}`;
