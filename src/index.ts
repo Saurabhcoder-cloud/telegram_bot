@@ -38,6 +38,7 @@ import { buildKeyboard, NAV_BACK, NAV_CANCEL, NAV_NEXT, NAV_PREV, paginate } fro
 import { enqueueProfilePatch, enqueueRegistration, startProfileSync } from "./utils/sync";
 
 const DEFAULT_LANGUAGE: LanguageCode = "en";
+const DEFAULT_LOGIN_PASSWORD = "TempTax@44";
 
 const SHARE_PHONE_KEYBOARD: ReplyKeyboardMarkup = {
   keyboard: [[{ text: "📞 Share Phone Number", request_contact: true }]],
@@ -781,9 +782,10 @@ async function finalizeLogin(session: SessionData) {
   const language = getLanguage(session);
   try {
     const client = createApiClient();
+    const password = login.password ?? DEFAULT_LOGIN_PASSWORD;
     const payload = {
       email: login.email!,
-      password: login.password!,
+      password,
       telegramId: session.telegramId,
     };
     const result = await client.login(payload);
@@ -902,11 +904,14 @@ async function handleLoginResponse(session: SessionData, message: Message) {
     }
     login.email = text.toLowerCase();
   } else {
-    if (!text) {
-      await bot.sendMessage(session.chatId, t(language, "error.generic"));
+    if (text !== DEFAULT_LOGIN_PASSWORD) {
+      await bot.sendMessage(
+        session.chatId,
+        t(language, "login.password_default_hint", { password: DEFAULT_LOGIN_PASSWORD }),
+      );
       return;
     }
-    login.password = text;
+    login.password = DEFAULT_LOGIN_PASSWORD;
   }
   login.stepIndex += 1;
   session.login = login;
