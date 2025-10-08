@@ -47,7 +47,7 @@ export async function queryAiAssistant(question: string, language: LanguageCode)
   const isOpenRouter = baseUrl === OPENROUTER_BASE_URL || /openrouter\.ai/.test(baseUrl);
 
   const body = {
-    model: config.aiModel || (isOpenRouter ? "openrouter/auto" : "gpt-4o-mini"),
+    model: config.aiModel || (isOpenRouter ? "deepseek/deepseek-chat-v3.1:free" : "gpt-4o-mini"),
     temperature: 0.2,
     top_p: 0.9,
     messages: [

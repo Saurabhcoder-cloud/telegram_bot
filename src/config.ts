@@ -17,7 +17,7 @@ const resolvedAiBaseUrl =
   process.env.AI_BASE_URL ?? (isOpenRouterKey ? "https://openrouter.ai/api/v1" : "https://api.openai.com/v1");
 
 const resolvedAiModel =
-  process.env.AI_MODEL ?? (isOpenRouterKey ? "openrouter/auto" : "gpt-4o-mini");
+  process.env.AI_MODEL ?? (isOpenRouterKey ? "deepseek/deepseek-chat-v3.1:free" : "gpt-4o-mini");
 
 export const config = {
   botToken: process.env.BOT_TOKEN!,
