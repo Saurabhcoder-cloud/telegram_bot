@@ -1,0 +1,8 @@
+{
+  "name": "@tax-assistant/db",
+  "version": "0.1.0",
+  "type": "module",
+  "prisma": {
+    "schema": "prisma/schema.prisma"
+  }
+}

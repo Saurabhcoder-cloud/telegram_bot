@@ -1,0 +1,53 @@
+generator client {
+  provider = "prisma-client-js"
+  previewFeatures = ["jsonProtocol"]
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id            String   @id @default(cuid())
+  phone         String?  @unique
+  phoneVerified Boolean  @default(false)
+  locale        String   @default("en-US")
+  createdAt     DateTime @default(now())
+  returns       Return[]
+  documents     Document[]
+  payments      Payment[]
+}
+
+model Return {
+  id                  String   @id @default(cuid())
+  userId              String
+  type                String
+  stateJson           Json
+  percentComplete     Int      @default(0)
+  lockedAfterPayment  Boolean  @default(false)
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+  user                User     @relation(fields: [userId], references: [id])
+}
+
+model Document {
+  id        String   @id @default(cuid())
+  userId    String
+  kind      String
+  url       String
+  checksum  String
+  expiresAt DateTime?
+  createdAt DateTime @default(now())
+  user      User     @relation(fields: [userId], references: [id])
+}
+
+model Payment {
+  id            String   @id @default(cuid())
+  userId        String
+  stripeSession String
+  amount        Int
+  status        String
+  createdAt     DateTime @default(now())
+  user          User     @relation(fields: [userId], references: [id])
+}

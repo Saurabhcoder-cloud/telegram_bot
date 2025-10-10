@@ -1,0 +1,145 @@
+---
+
+File: codex_prompts_taxhelp_ai.txt
+Project: TaxHelp AI — Single-file prompts for Codex (run sequentially)
+
+INSTRUCTIONS FOR USE:
+
+1. Copy this file and upload to Codex (or paste prompts one-by-one into Codex).
+2. Run prompts sequentially in the order listed.
+3. After each generated module, review and commit to your project folders: /frontend, /backend, /database.
+
+---
+
+PROMPT 1 — Project Initialization
+Create a full-stack web project named TaxHelp AI that helps U.S. users file taxes using AI and OCR. Use:
+
+* Frontend: Next.js (React) + TailwindCSS
+* Backend: Node.js + Express
+* Database: PostgreSQL
+  The project must include folders: /frontend, /backend, /database. Generate package.json files for frontend and backend and a root README.md describing the project.
+
+---
+
+PROMPT 2 — Authentication Module
+In the backend, create user authentication with email/password and Google OAuth. Use JWT tokens. Create SQL table:
+users(id SERIAL PRIMARY KEY, name VARCHAR, email VARCHAR UNIQUE, password VARCHAR, plan VARCHAR, plan_expiry DATE)
+APIs:
+
+* POST /auth/register
+* POST /auth/login
+* GET /auth/user/:id
+  Return example responses and error handling. Include password hashing and token expiry.
+
+---
+
+PROMPT 3 — AI Chat Assistant
+Create a backend API /chat/ask that:
+
+* Accepts { user_id, question, language }
+* Performs a RAG lookup against an IRS knowledge base (PDFs/web pages) to retrieve supporting passages
+* Calls OpenAI (GPT) to generate an answer that cites the retrieved passages
+* Translates the final answer into the user's language using Google Translate API, if language != 'en'
+  Return JSON: { answer, citations: [{title, url}], language }
+  Also generate frontend React chat UI (message bubbles, timestamps, typing indicator) that posts to /chat/ask.
+
+---
+
+PROMPT 4 — Subscription Plans (3 Paid Plans)
+Add 3 plans in pricing page and API: Standard ($9.00/month), Pro ($19.00/month), Premium ($29.00/month).
+Frontend: pricing table + "Buy Now" button for each plan.
+Backend: POST /api/payment/create-checkout-session that creates a Stripe Checkout Session with metadata { user_id, plan } and returns the session URL.
+Provide webhook handler /api/payment/webhook that verifies Stripe signature, reads checkout.session.completed, and updates user's plan and expiry in DB. Save transaction record.
+
+---
+
+PROMPT 5 — Tax Filing (OCR + Mapping + PDF)
+Create API /api/tax/file that accepts multipart/form-data file uploads (W-2, 1099). Steps:
+
+* Store file temporarily (S3 or local)
+* Send to Google Vision API or AWS Textract for OCR
+* Extract key fields and map to Form 1040 JSON schema (use mapping rules)
+* Call tax calculation (/api/tax/calculate) to compute tax_due/refund
+* Generate populated PDF (Form 1040 + required schedules) and return a secure download URL
+  Include example mapping table and error handling for unreadable uploads.
+
+---
+
+PROMPT 6 — Stripe Payment Flow
+Implement Stripe integration details:
+
+* plans object: { standard: 9.00, pro: 19.00, premium: 29.00 }
+* POST /api/payment/create-checkout-session: create session with metadata user_id & plan
+* POST /api/payment/webhook: on checkout.session.completed, update payments table and user.plan & plan_expiry
+  Provide SQL for payments table and a sample webhook verification snippet.
+
+---
+
+PROMPT 7 — Refund Calculator
+Create frontend route /refund-calculator and backend POST /api/tax/calculate that accepts { filing_status, dependents, annual_income, federal_withheld, deductions (optional) } and returns { taxable_income, tax_due, refund, status }.
+Implement IRS 2024 tax brackets for Single/Married/Head of Household and default standard deductions. Include child tax credit logic ($2,000 per qualifying child) in calculation.
+
+---
+
+PROMPT 8 — Multi-Language Support
+Add i18n support for 8 languages: English, Spanish, French, Hindi, Arabic, Chinese (Simplified), German, Russian.
+
+* Frontend: language dropdown, translate static UI strings
+* Backend: detect Accept-Language or user preference and return translated AI answers
+  Include fallback to English.
+
+---
+
+PROMPT 9 — Reminder & Notification System
+Create a scheduler (cron or background worker) that:
+
+* Runs daily
+* Finds users with active plans and pending filing deadlines
+* Sends email reminders via SendGrid/Nodemailer and optionally Telegram messages
+  Endpoints: POST /api/reminder/send (admin trigger)
+
+---
+
+PROMPT 10 — Deployment Guide
+Produce a step-by-step deployment guide:
+
+* Frontend: deploy on Vercel (Next.js)
+* Backend: deploy on Render or Railway
+* Database: hosted PostgreSQL (Neon / Supabase)
+* Environment variables list (.env.example)
+  Include build commands and sample Procfile or Render service settings.
+
+---
+
+PROMPT 11 — Dashboard Page
+Create a dashboard with tabs: Chat Assistant, Refund Calculator, File Taxes, My Documents, Subscription Plan. Each tab should call relevant API endpoints and show loading states and error messages.
+
+---
+
+PROMPT 12 — Database Schema
+Create a complete SQL schema file (schema.sql) containing tables: users, payments, tax_data, documents, reminders. Include indexes and foreign keys. Add seed data for two test users.
+
+---
+
+PROMPT 13 — Tax Engine Logic
+Implement the server-side function apply_tax_brackets(taxable_income, filing_status) implementing IRS 2024 brackets. Include standard deduction defaults and credit application (child tax credit). Return { tax_due }.
+
+---
+
+PROMPT 14 — Security & Best Practices
+Add middleware and configuration:
+
+* Helmet for security headers
+* CORS with allowed origins
+* Rate limiting on API endpoints
+* Input validation (express-validator) on critical endpoints
+* Store sensitive data encrypted or not stored; include PII masking rules
+
+---
+
+PROMPT 15 — Integration & Tests
+Create basic tests (Jest or Mocha) for: auth flow, payment webhook processing, tax calculation logic, OCR mapping sample. Include instructions to run tests.
+
+---
+
+END OF FILE
