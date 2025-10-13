@@ -9,7 +9,8 @@ export interface LanguageOption {
 export interface RegistrationPayload {
   fullName: string;
   email: string;
-  phone?: string;
+  phone: string;
+  password: string;
   dob: string;
   filingStatus: string;
   incomeType: string;
@@ -36,6 +37,8 @@ export interface UserProfile {
   language: LanguageCode;
   onboardingComplete?: boolean;
   lastSyncedAt?: string;
+  subscriptionPlan?: SubscriptionPlanId;
+  subscriptionStatus?: "trial" | "active" | "canceled" | "past_due" | "none";
 }
 
 export interface SessionRegistrationState {
@@ -60,12 +63,43 @@ export interface FilingData {
   mileage?: string;
 }
 
+export type OcrDocumentType = "w2" | "1099-int" | "1099-nec";
+
+export type FilingFormId = OcrDocumentType;
+
+export type FilingFormValueType = "text" | "currency";
+
+export interface FilingFormFieldRequirement {
+  key: string;
+  labelKey: string;
+  valueType?: FilingFormValueType;
+}
+
+export interface FilingFormConfig {
+  id: FilingFormId;
+  field: keyof FilingData;
+  labelKey: string;
+  requiredFields: FilingFormFieldRequirement[];
+  ocrType: OcrDocumentType;
+}
+
+export interface SessionFilingFormState {
+  field: keyof FilingData;
+  formId: FilingFormId;
+  ocrType: OcrDocumentType;
+  requiredFields: FilingFormFieldRequirement[];
+  collected: Record<string, string>;
+  pendingKeys: string[];
+  awaitingUpload: boolean;
+}
+
 export interface SessionFilingState {
   filingId?: string;
   stepIndex: number;
   totalSteps: number;
   data: FilingData;
   summaryMessageId?: number;
+  formState?: SessionFilingFormState;
 }
 
 export interface SessionReminderState {
@@ -78,6 +112,41 @@ export interface SessionProfileState {
   data?: Partial<UserProfile>;
 }
 
+export type SubscriptionPlanId = "free" | "standard" | "pro" | "premium";
+
+export interface TaxCreditBreakdown {
+  childTaxCredit: number;
+  earnedIncomeCredit: number;
+  educationCredit: number;
+}
+
+export interface RefundEstimateResult {
+  status: string;
+  dependents: number;
+  income: number;
+  taxableIncome: number;
+  estimatedTax: number;
+  credits: number;
+  creditsBreakdown?: TaxCreditBreakdown;
+  withheld: number;
+  net: number;
+  marginalRate?: number;
+}
+
+export interface SessionEstimateState {
+  step: "status" | "dependents" | "income" | "result";
+  status?: string;
+  dependents?: number;
+  income?: number;
+  result?: RefundEstimateResult;
+}
+
+export interface SessionSubscriptionState {
+  planId?: SubscriptionPlanId;
+  awaitingConfirmation?: boolean;
+  checkoutUrl?: string;
+}
+
 export type SessionMode =
   | "idle"
   | "registration"
@@ -85,7 +154,9 @@ export type SessionMode =
   | "filing"
   | "ai"
   | "profile"
-  | "reminder";
+  | "reminder"
+  | "estimate"
+  | "subscription";
 
 export interface SessionData {
   chatId: number;
@@ -99,6 +170,8 @@ export interface SessionData {
   filing?: SessionFilingState;
   reminder?: SessionReminderState;
   profileEditor?: SessionProfileState;
+  estimate?: SessionEstimateState;
+  subscription?: SessionSubscriptionState;
   lastActivity?: number;
 }
 
@@ -118,4 +191,27 @@ export interface ApiTaxForm {
 export interface AiResponse {
   answer: string;
   references?: string[];
+}
+
+export interface OcrProcessResult {
+  documentId: string;
+  type: OcrDocumentType;
+  fields: Record<string, string | number>;
+  rawText?: string;
+}
+
+export interface UploadDocumentResult {
+  documentId: string;
+  filename: string;
+  mimeType: string;
+}
+
+export interface TaxCalculationInput {
+  status: string;
+  dependents: number;
+  income: number;
+  withheld?: number;
+  childTaxCreditOverride?: number;
+  educationCreditOverride?: number;
+  earnedIncomeCreditOverride?: number;
 }

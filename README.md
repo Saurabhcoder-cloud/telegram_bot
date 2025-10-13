@@ -76,11 +76,25 @@ pm2 start ecosystem.config.js
 | `BOT_TOKEN` | Telegram bot token from BotFather |
 | `API_BASE_URL` | Base URL for the TaxHelp AI REST API (HTTPS) |
 | `STRIPE_KEY` | Publishable key used for contextual messaging (backend handles checkout session creation) |
+| `AI_API_KEY` | OpenAI-compatible key used for direct AI fallback when the backend is unavailable |
+| `OPENAI_API_KEY` | Optional alias for `AI_API_KEY` to ease local setups |
+| `AI_MODEL` | Model identifier for the direct AI fallback. Defaults to `gpt-4o-mini`, or `deepseek/deepseek-chat-v3.1:free` when an OpenRouter key (`sk-or-*`) is detected |
+| `AI_BASE_URL` | Override the OpenAI-compatible base URL. Defaults to OpenAI, or `https://openrouter.ai/api/v1` for OpenRouter keys |
+| `AI_REFERER` | Optional HTTP Referer header for providers such as OpenRouter (defaults to `https://taxhelp.ai`) |
+| `AI_TITLE` | Friendly application title sent to OpenRouter via the `X-Title` header |
 | `ADMIN_CHAT_ID` | Optional Telegram chat ID for startup notifications |
 | `WEBHOOK_URL` | Public HTTPS webhook endpoint (leave empty to use long polling) |
 | `WEBHOOK_SECRET` | Optional secret validated against `x-telegram-bot-api-secret-token` |
 | `PORT` | Webhook HTTP server port |
 | `BOT_NAME`, `BOT_VERSION`, `BOT_AUTHOR` | Metadata used in logs and admin notifications |
+
+Either `AI_API_KEY` or `OPENAI_API_KEY` must be populated with your provider secret to enable the multilingual “Ask a Tax Question” flow. The assistant automatically replies in the user’s chosen language when the key is present.
+
+> **Using OpenRouter / DeepSeek.** Paste your `sk-or-…` key into `AI_API_KEY`. The bot automatically switches to the OpenRouter base URL and model defaults. For the free DeepSeek V3.1 tier we default to `AI_MODEL=deepseek/deepseek-chat-v3.1:free`, but you can override the slug if OpenRouter advertises a newer alias. Optionally customise `AI_REFERER` and `AI_TITLE` to match your deployment domain and product name, as OpenRouter requires these headers.
+
+## 🙅‍♀️ Admin panel availability
+
+This repository does **not** include an admin dashboard, front-end, or dedicated API route for managing bot operators. The only administrator-specific configuration is the optional `ADMIN_CHAT_ID` environment variable, which the bot uses to send startup and error notifications to a Telegram user or channel. If your deployment requires an admin interface, you will need to build or integrate one separately and provision its credentials through your own infrastructure (for example, a password manager or secrets vault).
 
 ## 🔗 API integration cheatsheet
 The bot relies on TaxHelp AI’s REST API. Below are representative payloads used in the workflows.

@@ -9,6 +9,10 @@ import {
   RegistrationPayload,
   UserProfile,
   AiResponse,
+  SubscriptionPlanId,
+  OcrDocumentType,
+  OcrProcessResult,
+  UploadDocumentResult,
 } from "../types";
 
 interface RequestOptions extends RequestInit {
@@ -53,9 +57,11 @@ export class ApiClient {
   private async request<T>(path: string, options: RequestOptions = {}): Promise<T> {
     const { auth = true, query, headers, body, method = "GET" } = options;
     const url = this.buildUrl(path, query);
-    const finalHeaders: Record<string, string> = {
-      "Content-Type": "application/json",
-    };
+    const finalHeaders: Record<string, string> = {};
+    const isFormData = typeof FormData !== "undefined" && body instanceof FormData;
+    if (!isFormData && body !== undefined && body !== null) {
+      finalHeaders["Content-Type"] = "application/json";
+    }
     if (headers) {
       if (headers instanceof Headers) {
         headers.forEach((value, key) => {
@@ -201,11 +207,64 @@ export class ApiClient {
     });
   }
 
+  async createSubscriptionCheckout(
+    plan: SubscriptionPlanId
+  ): Promise<{ checkoutUrl: string; sessionId: string }> {
+    return this.request<{ checkoutUrl: string; sessionId: string }>("/payments/subscription", {
+      method: "POST",
+      body: JSON.stringify({ plan }),
+    });
+  }
+
   async askAi(question: string, language: LanguageCode): Promise<AiResponse> {
     return this.request<AiResponse>("/ai/query", {
       method: "POST",
       body: JSON.stringify({ question, language }),
     });
+  }
+
+  async uploadDocument(buffer: Buffer, filename: string, mimeType: string): Promise<UploadDocumentResult> {
+    const form = new FormData();
+    const arrayBuffer = buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength) as ArrayBuffer;
+    const blob = new Blob([arrayBuffer], { type: mimeType });
+    form.append("file", blob, filename);
+    return this.request<UploadDocumentResult>("/upload", {
+      method: "POST",
+      body: form,
+    });
+  }
+
+  async processOcr(documentId: string, type: OcrDocumentType): Promise<OcrProcessResult> {
+    return this.request<OcrProcessResult>("/ocr/process", {
+      method: "POST",
+      body: JSON.stringify({ documentId, type }),
+    });
+  }
+
+  async generateTaxPdf(filingId: string): Promise<Blob> {
+    const url = this.buildUrl("/pdf/generate");
+    const headers: Record<string, string> = {};
+    if (this.token) {
+      headers["Authorization"] = `Bearer ${this.token}`;
+    }
+    headers["Content-Type"] = "application/json";
+    const response = await fetch(url, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ filingId }),
+    });
+    if (!response.ok) {
+      const errorText = await response.text();
+      let message = response.statusText || "Failed to generate PDF";
+      try {
+        const payload = errorText ? JSON.parse(errorText) : undefined;
+        message = payload?.message ?? message;
+      } catch (error) {
+        logger.warn("Unable to parse PDF error response %o", error);
+      }
+      throw new ApiError(message, response.status);
+    }
+    return await response.blob();
   }
 
   async scheduleReminder(reminderType: string, dueDate: string): Promise<{ id: string }> {
