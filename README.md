@@ -92,6 +92,10 @@ Either `AI_API_KEY` or `OPENAI_API_KEY` must be populated with your provider sec
 
 > **Using OpenRouter / DeepSeek.** Paste your `sk-or-…` key into `AI_API_KEY`. The bot automatically switches to the OpenRouter base URL and model defaults. For the free DeepSeek V3.1 tier we default to `AI_MODEL=deepseek/deepseek-chat-v3.1:free`, but you can override the slug if OpenRouter advertises a newer alias. Optionally customise `AI_REFERER` and `AI_TITLE` to match your deployment domain and product name, as OpenRouter requires these headers.
 
+## 🙅‍♀️ Admin panel availability
+
+This repository does **not** include an admin dashboard, front-end, or dedicated API route for managing bot operators. The only administrator-specific configuration is the optional `ADMIN_CHAT_ID` environment variable, which the bot uses to send startup and error notifications to a Telegram user or channel. If your deployment requires an admin interface, you will need to build or integrate one separately and provision its credentials through your own infrastructure (for example, a password manager or secrets vault).
+
 ## 🔗 API integration cheatsheet
 The bot relies on TaxHelp AI’s REST API. Below are representative payloads used in the workflows.
 
