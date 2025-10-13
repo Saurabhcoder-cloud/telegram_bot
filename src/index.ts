@@ -11,6 +11,7 @@ import logger from "./logger";
 import { LANGUAGES, languageLabel, t } from "./i18n";
 import { sessionStore } from "./session";
 import {
+  AiResponse,
   FilingData,
   FilingDocument,
   FilingStageSummary,
@@ -33,6 +34,7 @@ import {
   type OptionDefinition,
 } from "./constants";
 import { ApiError, createApiClient, isNetworkError } from "./services/apiClient";
+import { askOpenRouter } from "./services/openRouter";
 import { COUNTRIES, STATES } from "./data/locations";
 import { buildKeyboard, NAV_BACK, NAV_CANCEL, NAV_NEXT, NAV_PREV, paginate } from "./utils/keyboard";
 import { enqueueProfilePatch, enqueueRegistration, startProfileSync } from "./utils/sync";
@@ -794,16 +796,32 @@ async function finalizeLogin(session: SessionData) {
     session.language = result.user.language;
     session.mode = "idle";
     session.login = undefined;
+    session.offlineMode = false;
+    session.offlineLogin = undefined;
     sessionStore.update(session.chatId, session);
     await bot.sendMessage(session.chatId, t(session.language, "login.completed"));
     await sendMainMenu(session);
   } catch (error) {
-    if (isNetworkError(error)) {
-      login.stepIndex = Math.max(0, loginSteps.length - 1);
-      session.login = login;
+    if (isNetworkError(error) || !config.apiBaseUrl) {
+      const email = login.email ?? `user${session.chatId}@example.com`;
+      const fallbackProfile: UserProfile =
+        session.profile ?? {
+          id: `offline-${session.chatId}`,
+          fullName: login.email ? login.email.split("@")[0] ?? login.email : "TaxHelp AI User",
+          email,
+          language,
+        };
+      fallbackProfile.language = language;
+      session.jwt = "offline";
+      session.profile = fallbackProfile;
+      session.language = language;
+      session.mode = "idle";
+      session.login = undefined;
+      session.offlineMode = true;
+      session.offlineLogin = { email, authenticatedAt: new Date().toISOString() };
       sessionStore.update(session.chatId, session);
-      await bot.sendMessage(session.chatId, t(language, "error.network"));
-      await promptLoginStep(session);
+      await bot.sendMessage(session.chatId, t(language, "login.completed_offline"));
+      await sendMainMenu(session);
       return;
     }
     logger.error("Login error %o", error);
@@ -1310,8 +1328,23 @@ async function handleAiQuestion(session: SessionData, message: Message) {
   }
   await bot.sendMessage(session.chatId, t(language, "ai.thinking"));
   try {
-    const client = createApiClient(session.jwt);
-    const response = await client.askAi(message.text, language);
+    let response: AiResponse | undefined;
+    if (session.jwt !== "offline" && config.apiBaseUrl) {
+      try {
+        const client = createApiClient(session.jwt);
+        response = await client.askAi(message.text, language);
+      } catch (error) {
+        if (!isNetworkError(error)) {
+          throw error;
+        }
+        logger.warn("Backend AI unavailable, falling back to OpenRouter: %o", error);
+      }
+    }
+
+    if (!response) {
+      response = await askOpenRouter(message.text, language);
+    }
+
     let reply = response.answer;
     if (response.references && response.references.length > 0) {
       reply += `\n\n${t(language, "ai.reference_prefix")}`;

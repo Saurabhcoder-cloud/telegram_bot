@@ -65,6 +65,8 @@ const translations: Record<LanguageCode, Record<string, string>> = {
     "login.password_default_hint": "Use the default password {{password}} to continue.",
     "login.failed": "We could not verify those credentials. Try again or contact support.",
     "login.completed": "✅ Login successful.",
+    "login.completed_offline":
+      "✅ Logged in with offline access. Available tools are ready to use; I'll sync when we're back online.",
     "menu.title": "Main Menu",
     "menu.start_filing": "📝 Start Tax Filing",
     "menu.view_forms": "📂 View My Tax Forms",
@@ -202,6 +204,8 @@ const translations: Record<LanguageCode, Record<string, string>> = {
     "login.password_default_hint": "Usa la contraseña predeterminada {{password}} para continuar.",
     "login.failed": "No pudimos verificar tus datos. Intenta nuevamente o contacta soporte.",
     "login.completed": "✅ Inicio de sesión exitoso.",
+    "login.completed_offline":
+      "✅ Inicio de sesión sin conexión completado. Las funciones disponibles ya están listas; sincronizaré cuando vuelva la conexión.",
     "menu.title": "Menú principal",
     "menu.start_filing": "📝 Iniciar declaración",
     "menu.view_forms": "📂 Ver mis formularios",
@@ -339,6 +343,8 @@ const translations: Record<LanguageCode, Record<string, string>> = {
     "login.password_default_hint": "Используйте стандартный пароль {{password}}, чтобы продолжить.",
     "login.failed": "Не удалось подтвердить данные. Попробуйте ещё раз или свяжитесь с поддержкой.",
     "login.completed": "✅ Вы успешно вошли.",
+    "login.completed_offline":
+      "✅ Вход выполнен в офлайн-режиме. Доступные функции готовы, синхронизация пройдёт при появлении сети.",
     "menu.title": "Главное меню",
     "menu.start_filing": "📝 Начать заполнение",
     "menu.view_forms": "📂 Мои формы",
@@ -476,6 +482,8 @@ const translations: Record<LanguageCode, Record<string, string>> = {
     "login.password_default_hint": "请使用默认密码 {{password}} 继续。",
     "login.failed": "无法验证您的信息，请重试或联系支持。",
     "login.completed": "✅ 登录成功。",
+    "login.completed_offline":
+      "✅ 已在离线模式下登录。可用功能可以继续使用，联网后我会同步。",
     "menu.title": "主菜单",
     "menu.start_filing": "📝 开始报税",
     "menu.view_forms": "📂 查看税表",
@@ -613,6 +621,8 @@ const translations: Record<LanguageCode, Record<string, string>> = {
     "login.password_default_hint": "استخدم كلمة المرور الافتراضية {{password}} للمتابعة.",
     "login.failed": "تعذر التحقق من البيانات. حاول مجددًا أو تواصل مع الدعم.",
     "login.completed": "✅ تم تسجيل الدخول.",
+    "login.completed_offline":
+      "✅ تم تسجيل الدخول في وضع عدم الاتصال. الميزات المتاحة جاهزة للاستخدام وسأقوم بالمزامنة عند توفر الاتصال.",
     "menu.title": "القائمة الرئيسية",
     "menu.start_filing": "📝 بدء الإقرار",
     "menu.view_forms": "📂 عرض النماذج",
@@ -750,6 +760,8 @@ const translations: Record<LanguageCode, Record<string, string>> = {
     "login.password_default_hint": "برای ادامه از گذرواژه پیش‌فرض {{password}} استفاده کنید.",
     "login.failed": "امکان تأیید اطلاعات نبود. دوباره تلاش کنید یا با پشتیبانی تماس بگیرید.",
     "login.completed": "✅ ورود موفقیت‌آمیز بود.",
+    "login.completed_offline":
+      "✅ ورود در حالت آفلاین انجام شد. امکانات در دسترس هستند و با بازگشت اینترنت همگام‌سازی می‌شود.",
     "menu.title": "منوی اصلی",
     "menu.start_filing": "📝 شروع اظهارنامه",
     "menu.view_forms": "📂 مشاهده فرم‌ها",

@@ -157,6 +157,11 @@ export interface SessionData {
   profileEditor?: SessionProfileState;
   ui?: SessionUiState;
   lastActivity?: number;
+  offlineMode?: boolean;
+  offlineLogin?: {
+    email: string;
+    authenticatedAt: string;
+  };
 }
 
 export interface ApiUserResponse {

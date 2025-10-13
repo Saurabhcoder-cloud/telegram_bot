@@ -22,6 +22,7 @@ export const config = {
   webhookUrl: process.env.WEBHOOK_URL,
   webhookSecret: process.env.WEBHOOK_SECRET ?? undefined,
   port: Number(process.env.PORT ?? 3000),
+  openRouterApiKey: process.env.OPENROUTER_API_KEY ?? "",
 };
 
 export type AppConfig = typeof config;
